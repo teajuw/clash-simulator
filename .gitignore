@@ -9,4 +9,4 @@ __pycache__
 .cursorindexingignore
 .pytest_cache
 .venv
-logs/
+logs/models/
