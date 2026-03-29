@@ -49,6 +49,10 @@ TROOP_OVERRIDES: dict[str, dict] = {
         "hitpoints": 81,
         "damage": 81,
     },
+    "Skeletons": {
+        "hitpoints": 81,
+        "damage": 81,
+    },
 }
 
 # ── Spell overrides ──────────────────────────────────────────────────────────
