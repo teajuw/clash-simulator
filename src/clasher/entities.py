@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 from .arena import Position
 from .card_types import CardStatsCompat, Mechanic
 from .factory.dynamic_factory import troop_from_character_data, troop_from_values
+from .config import VERBOSE
 
 
 class EntityType(Enum):
@@ -95,13 +96,13 @@ class Entity(ABC):
 
     def on_spawn(self) -> None:
         """Called when entity is spawned in battle"""
-        print(f"[Lifecycle] on_spawn {getattr(self.card_stats, 'name', 'Unknown')} id={self.id}")
+        if VERBOSE: print(f"[Lifecycle] on_spawn {getattr(self.card_stats, 'name', 'Unknown')} id={self.id}")
         for mechanic in self.mechanics:
             mechanic.on_spawn(self)
 
     def on_death(self) -> None:
         """Called when entity dies"""
-        print(f"[Lifecycle] on_death {getattr(self.card_stats, 'name', 'Unknown')} id={self.id}")
+        if VERBOSE: print(f"[Lifecycle] on_death {getattr(self.card_stats, 'name', 'Unknown')} id={self.id}")
         for mechanic in self.mechanics:
             mechanic.on_death(self)
     

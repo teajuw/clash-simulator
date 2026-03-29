@@ -19,6 +19,7 @@ from .factory.dynamic_factory import (
 )
 from .spells import SPELL_REGISTRY
 from .mechanics.shared.death_effects import DeathSpawn
+from .config import VERBOSE
 
 
 @dataclass
@@ -309,7 +310,7 @@ class BattleState:
                 for mech in troop.mechanics:
                     mech.on_attach(troop)
                 if troop.mechanics:
-                    print(f"[Attach] {defn_name}: {len(troop.mechanics)} mechanic(s)")
+                    if VERBOSE: print(f"[Attach] {defn_name}: {len(troop.mechanics)} mechanic(s)")
         except Exception as e:
             print(f"[Warn] Failed attaching mechanics for {getattr(card_stats, 'name', 'Unknown')}: {e}")
         
@@ -415,7 +416,7 @@ class BattleState:
                 for mech in troop.mechanics:
                     mech.on_attach(troop)
                 if troop.mechanics:
-                    print(f"[Attach] {defn_name}: {len(troop.mechanics)} mechanic(s)")
+                    if VERBOSE: print(f"[Attach] {defn_name}: {len(troop.mechanics)} mechanic(s)")
         except Exception as e:
             print(f"[Warn] Failed attaching mechanics for {getattr(card_stats, 'name', 'Unknown')}: {e}")
         
@@ -759,7 +760,7 @@ class BattleState:
             for mech in entity.mechanics:
                 mech.on_attach(entity)
             if entity.mechanics:
-                print(f"[Attach] {getattr(card_stats, 'name', 'Building')}: {len(entity.mechanics)} mechanic(s)")
+                if VERBOSE: print(f"[Attach] {getattr(card_stats, 'name', 'Building')}: {len(entity.mechanics)} mechanic(s)")
 
         self.entities[self.next_entity_id] = entity
         self.next_entity_id += 1

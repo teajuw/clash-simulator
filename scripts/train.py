@@ -16,13 +16,17 @@ import numpy as np
 from stable_baselines3 import DQN, PPO
 from stable_baselines3.common.callbacks import BaseCallback
 
+# Suppress simulator debug prints during training
+import clasher.config as _cfg
+_cfg.VERBOSE = False
+
 from clasher.env import ClashRoyaleEnv
 
 
 class WinRateCallback(BaseCallback):
-    """Log win rate every N episodes."""
+    """Log win rate every N episodes with rolling and cumulative stats."""
 
-    def __init__(self, eval_every: int = 50, verbose: int = 1):
+    def __init__(self, eval_every: int = 20, verbose: int = 1):
         super().__init__(verbose)
         self.eval_every = eval_every
         self.episode_count = 0
@@ -31,8 +35,10 @@ class WinRateCallback(BaseCallback):
         self.draws = 0
         self.episode_rewards = []
         self.episode_lengths = []
+        self.episode_winners = []
         self._current_reward = 0.0
         self._current_length = 0
+        self._start_time = time.time()
 
     def _on_step(self) -> bool:
         self._current_reward += self.locals.get("rewards", [0])[0]
@@ -49,6 +55,7 @@ class WinRateCallback(BaseCallback):
             # Check winner
             infos = self.locals.get("infos", [{}])
             winner = infos[0].get("winner", None)
+            self.episode_winners.append(winner)
             if winner == 0:
                 self.wins += 1
             elif winner == 1:
@@ -57,14 +64,25 @@ class WinRateCallback(BaseCallback):
                 self.draws += 1
 
             if self.episode_count % self.eval_every == 0:
+                # Cumulative stats
                 total = self.wins + self.losses + self.draws
-                wr = self.wins / total * 100 if total > 0 else 0
-                avg_r = np.mean(self.episode_rewards[-self.eval_every:])
-                avg_len = np.mean(self.episode_lengths[-self.eval_every:])
+                cum_wr = self.wins / total * 100 if total > 0 else 0
+
+                # Rolling window stats (last N episodes)
+                n = self.eval_every
+                recent_wins = sum(1 for w in self.episode_winners[-n:] if w == 0)
+                recent_wr = recent_wins / n * 100
+
+                avg_r = np.mean(self.episode_rewards[-n:])
+                avg_len = np.mean(self.episode_lengths[-n:])
+                elapsed = time.time() - self._start_time
+                steps = self.num_timesteps
+
                 print(
-                    f"[Ep {self.episode_count:4d}] "
-                    f"WR={wr:.1f}% ({self.wins}W/{self.losses}L/{self.draws}D) "
-                    f"avg_reward={avg_r:.2f} avg_steps={avg_len:.0f}"
+                    f"[Ep {self.episode_count:4d} | {steps:7,} steps | {elapsed:5.0f}s] "
+                    f"last{n}_WR={recent_wr:4.1f}%  cum_WR={cum_wr:4.1f}%  "
+                    f"avg_R={avg_r:+7.2f}  avg_len={avg_len:3.0f}  "
+                    f"({self.wins}W/{self.losses}L/{self.draws}D)"
                 )
         return True
 
@@ -74,7 +92,12 @@ def main():
     parser.add_argument("--algo", choices=["dqn", "ppo"], default="dqn")
     parser.add_argument("--timesteps", type=int, default=50_000)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--verbose", action="store_true", help="Show simulator debug prints")
+    parser.add_argument("--log-every", type=int, default=20, help="Log stats every N episodes")
     args = parser.parse_args()
+
+    if args.verbose:
+        _cfg.VERBOSE = True
 
     print(f"Training {args.algo.upper()} for {args.timesteps:,} timesteps")
     print(f"Opponent: rule_bot | Seed: {args.seed}")
@@ -113,7 +136,7 @@ def main():
             ent_coef=0.01,
         )
 
-    callback = WinRateCallback(eval_every=20)
+    callback = WinRateCallback(eval_every=args.log_every)
 
     t0 = time.time()
     model.learn(total_timesteps=args.timesteps, callback=callback)
