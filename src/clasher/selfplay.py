@@ -79,8 +79,10 @@ class SnapshotPool:
         self._rule_bot_id = "__rule_bot__"
 
         self.snapshots: List[str] = [self._rule_bot_id]
-        # Track win/loss per opponent: {opponent_id: [wins, losses]}
+        # Track RECENT win/loss per opponent (rolling window of last N results)
+        self._max_record_history = 50  # only consider last 50 games per opponent
         self.records: Dict[str, List[int]] = {self._rule_bot_id: [0, 0]}
+        self._result_history: Dict[str, List[bool]] = {self._rule_bot_id: []}
         # Elo ratings: {opponent_id: rating}
         self.elo: Dict[str, float] = {self._rule_bot_id: 1000.0}
         # Readable names: {path: "swift-hog-200"}
@@ -125,10 +127,17 @@ class SnapshotPool:
         """Record a win or loss and update Elo ratings."""
         if opponent_id not in self.records:
             self.records[opponent_id] = [0, 0]
+            self._result_history[opponent_id] = []
         if won:
             self.records[opponent_id][0] += 1
         else:
             self.records[opponent_id][1] += 1
+
+        # Rolling window: track recent results for PFSP
+        history = self._result_history.setdefault(opponent_id, [])
+        history.append(won)
+        if len(history) > self._max_record_history:
+            history.pop(0)
 
         # Update agent Elo only — opponent ratings are frozen at save time
         if opponent_id not in self.elo:
@@ -137,29 +146,37 @@ class SnapshotPool:
         self.agent_elo, _ = _update_elo(self.agent_elo, opp_elo, won)
 
     def sample_opponent(self, **kwargs) -> str:
-        """PFSP sampling: weight by how hard each opponent is.
+        """PFSP sampling using rolling window of recent results.
 
-        weight = (1 - win_rate)^2  →  harder opponents sampled more.
-        New opponents with no games get max weight (explore them first).
+        weight = (lose_rate_recent)^2 — harder opponents sampled more.
+        No single opponent can exceed 30% of the sampling probability.
         """
         if len(self.snapshots) <= 1:
             return self.snapshots[0]
 
         weights = []
         for s in self.snapshots:
-            w, l = self.records.get(s, [0, 0])
-            total = w + l
-            if total < 3:
-                # Not enough data — give high weight to explore
-                weight = 1.0
+            history = self._result_history.get(s, [])
+            if len(history) < 3:
+                weight = 1.0  # explore new opponents
             else:
-                lose_rate = l / total
-                weight = max(0.05, lose_rate ** 2)  # min 5% so no opponent is fully ignored
+                recent_losses = sum(1 for r in history if not r)
+                lose_rate = recent_losses / len(history)
+                weight = max(0.05, lose_rate ** 2)
             weights.append(weight)
 
-        # Normalize
+        # Normalize then cap any single opponent at 30%
         total_w = sum(weights)
         probs = [w / total_w for w in weights]
+        max_prob = 0.30
+        capped = False
+        for i in range(len(probs)):
+            if probs[i] > max_prob:
+                probs[i] = max_prob
+                capped = True
+        if capped:
+            total_p = sum(probs)
+            probs = [p / total_p for p in probs]
 
         return _random.choices(self.snapshots, weights=probs, k=1)[0]
 
@@ -170,25 +187,34 @@ class SnapshotPool:
         return w / total if total > 0 else None
 
     def get_stats_summary(self) -> List[Tuple[str, int, int, float]]:
-        """Return (name, wins, losses, weight) for each snapshot."""
+        """Return (name, recent_wins, recent_losses, weight%) for each snapshot."""
         stats = []
         weights = []
         for s in self.snapshots:
-            w, l = self.records.get(s, [0, 0])
-            total = w + l
-            if total < 3:
+            history = self._result_history.get(s, [])
+            if len(history) < 3:
                 weight = 1.0
             else:
-                lose_rate = l / total
+                recent_losses = sum(1 for r in history if not r)
+                lose_rate = recent_losses / len(history)
                 weight = max(0.05, lose_rate ** 2)
             weights.append(weight)
 
         total_w = sum(weights) or 1.0
+        probs = [w / total_w for w in weights]
+        # Apply same cap as sampling
+        for i in range(len(probs)):
+            if probs[i] > 0.30:
+                probs[i] = 0.30
+        total_p = sum(probs) or 1.0
+        probs = [p / total_p for p in probs]
+
         for i, s in enumerate(self.snapshots):
-            w, l = self.records.get(s, [0, 0])
+            history = self._result_history.get(s, [])
+            rw = sum(1 for r in history if r)
+            rl = sum(1 for r in history if not r)
             name = self.names.get(s, Path(s).stem)
-            prob = weights[i] / total_w * 100
-            stats.append((name, w, l, prob))
+            stats.append((name, rw, rl, probs[i] * 100))
         return stats
 
     @property
