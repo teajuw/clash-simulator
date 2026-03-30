@@ -269,6 +269,10 @@ class LeagueCallback(BaseCallback):
         self._explorer_phase_start = 0
         # Rolling WR for performance-based decisions
         self._recent_window = 100
+        # Stagnation detection for exploiters
+        self._best_wr = 0.0
+        self._best_wr_ep = 0
+        self._stagnation_patience = 500  # reset after 500 eps without improvement
 
     def _recent_wr(self) -> float:
         """Win rate over last N episodes."""
@@ -357,16 +361,25 @@ class LeagueCallback(BaseCallback):
                             print(f"{self.log_prefix} Loaded main critic")
                         except Exception:
                             pass
-                # Save only quality exploits
+                # Track best WR for stagnation detection
+                wr = self._recent_wr()
+                if wr > self._best_wr:
+                    self._best_wr = wr
+                    self._best_wr_ep = self.episode_count
+
+                # Save quality exploits
                 if self.episode_count % self.save_every == 0:
                     self._quality_save(min_wr=0.6)
-                # Reset when exploit is found (WR > 70%) — find the NEXT one
+
+                # Reset when stagnated — no WR improvement for 500 eps
+                eps_since_improvement = self.episode_count - self._best_wr_ep
                 if (self.episode_count > 500
-                        and self.episode_count % 100 == 0
-                        and self._recent_wr() > 0.70):
-                    print(f"{self.log_prefix} Exploit found (WR={self._recent_wr():.0%}), resetting")
+                        and eps_since_improvement >= self._stagnation_patience):
+                    print(f"{self.log_prefix} Stagnated at WR={wr:.0%} (best={self._best_wr:.0%}), resetting")
                     self._quality_save(min_wr=0.5)
                     self._reset_to_main()
+                    self._best_wr = 0.0
+                    self._best_wr_ep = self.episode_count
 
             elif self.role == "entropy_explorer":
                 # Entropy schedule: explore (0.10) for 200 eps, exploit (0.02) after
@@ -381,15 +394,22 @@ class LeagueCallback(BaseCallback):
                 if self._explorer_phase == "exploit" and self.episode_count % self.save_every == 0:
                     self._quality_save(min_wr=0.6)
 
-                # Reset when exploit phase fails (WR < 40%)
-                if (self._explorer_phase == "exploit"
-                        and eps_in_phase >= 200
-                        and self._recent_wr() < 0.40):
-                    self._explorer_phase = "explore"
-                    self._explorer_phase_start = self.episode_count
-                    self.model.ent_coef = 0.10
-                    self._reset_to_main()
-                    print(f"{self.log_prefix} Exploit failed, resetting (ent→0.10)")
+                # Track stagnation during exploit phase
+                if self._explorer_phase == "exploit":
+                    wr = self._recent_wr()
+                    if wr > self._best_wr:
+                        self._best_wr = wr
+                        self._best_wr_ep = self.episode_count
+
+                    eps_since_improvement = self.episode_count - self._best_wr_ep
+                    if eps_since_improvement >= self._stagnation_patience:
+                        self._explorer_phase = "explore"
+                        self._explorer_phase_start = self.episode_count
+                        self.model.ent_coef = 0.10
+                        self._reset_to_main()
+                        self._best_wr = 0.0
+                        self._best_wr_ep = self.episode_count
+                        print(f"{self.log_prefix} Stagnated at WR={wr:.0%}, resetting (ent→0.10)")
 
             elif self.role == "league_exploiter":
                 # Save on schedule (no quality gate — diverse strategies welcome)
