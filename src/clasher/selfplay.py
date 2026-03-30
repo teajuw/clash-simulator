@@ -402,7 +402,7 @@ def render_pool_status(
         f"┌────────────────────────────────────────────────────────┐",
         f"│  {phase:<18s}  Pool: {pool_size:2d}  Ep: {episode:<5d}  {steps:>8,} steps │",
         f"├────────────────────────────────────────────────────────┤",
-        f"│  Last 20 WR: [{wr_bar}] {recent_wr:4.1f}%  │",
+        f"│  Recent WR:  [{wr_bar}] {recent_wr:4.1f}%  │",
         f"│  Overall:    {wins}W / {losses}L ({win_rate:4.1f}%)   R={avg_reward:+.1f}  {elapsed:.0f}s │",
         f"│  Elo: {agent_elo:.0f}  (rule_bot=1000)                            │",
     ]
