@@ -11,3 +11,5 @@ __pycache__
 .venv
 logs/models/
 snapshots/
+*.DS_Store
+training.log
