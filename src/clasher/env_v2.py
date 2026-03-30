@@ -121,10 +121,13 @@ class ClashRoyaleEnvV2(gym.Env):
         ticks_per_step: int = TICKS_PER_STEP,
         backend: str = "auto",
         render_mode: Optional[str] = None,
+        adversarial: bool = False,
     ):
         super().__init__()
         self.ticks_per_step = ticks_per_step
         self.render_mode = render_mode
+
+        self.adversarial = adversarial
 
         if backend == "auto":
             self.use_rust = RUST_AVAILABLE
@@ -343,24 +346,23 @@ class ClashRoyaleEnvV2(gym.Env):
     def _compute_reward(self) -> float:
         """Reward: tower damage + crowns + win/loss + elixir leak penalty.
 
-        No card penalty — penalizing plays taught the agent to do nothing.
-        Instead, leak penalty teaches "don't waste elixir" which naturally
-        encourages playing cards at the right time.
+        In adversarial mode, reward is flipped: the agent gets positive
+        reward for damaging the OPPONENT (who is the main agent it's
+        trying to exploit). The exploiter is optimized to break main.
         """
         my_hp = self._total_tower_hp(0)
         opp_hp = self._total_tower_hp(1)
-
-        # Dense signal: tower HP changes (normalized by total max HP)
         total_max = MAX_KING_HP + 2 * MAX_PRINCESS_HP
-        r_dmg_dealt = (self._prev_opp_tower_hp - opp_hp) / total_max * 5.0
-        r_dmg_taken = (self._prev_my_tower_hp - my_hp) / total_max * 2.5
+
+        # Tower HP changes
+        dmg_dealt = (self._prev_opp_tower_hp - opp_hp) / total_max * 5.0
+        dmg_taken = (self._prev_my_tower_hp - my_hp) / total_max * 2.5
 
         # Crown milestones
         my_crowns = self.battle.players[1].get_crown_count()
         opp_crowns = self.battle.players[0].get_crown_count()
         crowns_scored = my_crowns - self._prev_my_crowns
         crowns_lost = opp_crowns - self._prev_opp_crowns
-        r_crowns = crowns_scored * 20.0 - crowns_lost * 30.0
 
         # Win/loss terminal
         r_win = 0.0
@@ -370,7 +372,7 @@ class ClashRoyaleEnvV2(gym.Env):
             elif self.battle.winner == 1:
                 r_win = -50.0
 
-        # Elixir leak penalty: don't sit at 10 doing nothing
+        # Elixir leak
         elixir = self.battle.players[0].elixir
         r_leak = -0.5 if elixir >= 9.8 else 0.0
 
@@ -380,7 +382,14 @@ class ClashRoyaleEnvV2(gym.Env):
         self._prev_my_crowns = my_crowns
         self._prev_opp_crowns = opp_crowns
 
-        return r_dmg_dealt - r_dmg_taken + r_crowns + r_win + r_leak
+        if self.adversarial:
+            # Flip: reward damage TO opponent's towers, penalize own tower loss less
+            # The exploiter WANTS to destroy, doesn't care as much about defense
+            r_crowns = crowns_scored * 30.0 - crowns_lost * 10.0  # inverted weights
+            return dmg_dealt * 1.0 - dmg_taken * 0.5 + r_crowns + r_win + r_leak
+        else:
+            r_crowns = crowns_scored * 20.0 - crowns_lost * 30.0
+            return dmg_dealt - dmg_taken + r_crowns + r_win + r_leak
 
     def _total_tower_hp(self, player_id: int) -> float:
         p = self.battle.players[player_id]

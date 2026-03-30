@@ -295,13 +295,20 @@ class LeagueCallback(BaseCallback):
                                     f"{self.role}_{self.episode_count}")
                 self.model.save(path)
 
-            # Main exploiter: reset weights periodically to keep exploring
+            # Main exploiter: reset to latest main agent's weights periodically
+            # This gives the exploiter a competent starting point, then the
+            # adversarial reward drives it to find main's specific weaknesses.
             if self.role == "main_exploiter" and self.episode_count % self.reset_every == 0:
-                # Partial reset: re-randomize last layer only
-                import torch
-                with torch.no_grad():
-                    for param in self.model.policy.action_net.parameters():
-                        param.normal_(0, 0.1)
+                main_zips = sorted(glob(os.path.join(self.snapshot_dir, "main_*.zip")))
+                if main_zips:
+                    try:
+                        latest_main = main_zips[-1].replace(".zip", "")
+                        main_model = PPO.load(latest_main)
+                        # Copy main's weights into exploiter
+                        self.model.policy.load_state_dict(main_model.policy.state_dict())
+                        print(f"{self.log_prefix} Reset to {Path(latest_main).stem}")
+                    except Exception:
+                        pass  # if load fails, just keep current weights
 
             # Display
             if self.episode_count % self.log_every == 0:
@@ -362,7 +369,9 @@ def main():
     opp_state = getattr(opponent_fn, '_state', None)
 
     # Create env with custom opponent
-    env = ClashRoyaleEnv(opponent="none")
+    # Main exploiter uses adversarial reward (optimized to break main)
+    is_adversarial = args.role == "main_exploiter"
+    env = ClashRoyaleEnv(opponent="none", adversarial=is_adversarial)
     env._opponent_fn = opponent_fn
 
     from clasher.network import CRFeatureExtractor
