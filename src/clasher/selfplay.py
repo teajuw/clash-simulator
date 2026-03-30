@@ -173,7 +173,7 @@ class SnapshotPool:
         for s in self.snapshots:
             n = self._ema_games.get(s, 0)
             if n < 3:
-                weight = 1.0  # explore new opponents
+                weight = 0.3  # moderate explore, don't dominate sampling
             else:
                 lr = self._ema_lose_rate.get(s, 0.5)
                 weight = max(0.05, lr ** 2)
@@ -379,7 +379,7 @@ class SelfPlayEnv(ClashRoyaleEnv):
         self,
         snapshot_dir: str = "snapshots",
         save_every: int = 50,
-        max_pool: int = 20,
+        max_pool: int = 100,
         **kwargs,
     ):
         super().__init__(opponent="none", **kwargs)
@@ -406,6 +406,7 @@ class SelfPlayEnv(ClashRoyaleEnv):
 
         # Sample new opponent (PFSP weighted)
         self._current_opponent_id = self.pool.sample_opponent()
+
         self.opponent.load(self._current_opponent_id)
         self.opponent_name = self.opponent.name
         self._recent_opponents.append(self.opponent_name)
