@@ -21,7 +21,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 import clasher.config as _cfg
 _cfg.VERBOSE = False
 
-from clasher.env import ClashRoyaleEnv, DECK, tile_to_position, ELIXIR_COST
+from clasher.env_v2 import ClashRoyaleEnvV2 as ClashRoyaleEnv, DECK, tile_to_position, ELIXIR_COST
 from clasher.arena import Position
 from clasher.entities import Troop
 
@@ -281,19 +281,26 @@ def main():
     env = ClashRoyaleEnv(opponent="none")
     env._opponent_fn = opponent_fn
 
+    from clasher.network import CRFeatureExtractor
+    policy_kwargs = dict(
+        features_extractor_class=CRFeatureExtractor,
+        features_extractor_kwargs=dict(features_dim=256),
+        net_arch=dict(pi=[128, 128], vf=[128, 128]),
+    )
+
     if args.resume:
         model = PPO.load(args.resume, env=env, device="cpu")
-        # Update entropy coefficient for this role
         model.ent_coef = args.ent_coef
     else:
         model = PPO(
-            "MlpPolicy",
+            "MultiInputPolicy",
             env,
             verbose=0,
             seed=args.seed,
             device="cpu",
-            n_steps=1024,
-            batch_size=128,
+            policy_kwargs=policy_kwargs,
+            n_steps=512,
+            batch_size=64,
             n_epochs=4,
             gamma=0.99,
             gae_lambda=0.95,
