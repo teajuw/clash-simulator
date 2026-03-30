@@ -48,38 +48,37 @@ ELIXIR_COST = {
     "Cannon": 3, "Fireball": 4, "Skeletons": 1, "TheLog": 2,
 }
 
-# ── Region Grid (6×5 = 30 regions) ────────────────────────────────────────────
-# Each region is a 3-tile-wide × 3-tile-tall zone.
-# Deploy at the center of the region.
+# ── Tile Grid (full 18×15 resolution) ─────────────────────────────────────────
+# Three-head action decomposition: card choice × tile_x × tile_y
+# No region abstraction — full tile precision for precise placements.
 #
-#  y=12-14 | R24  R25  R26  R27  R28  R29 |  ← bridge approach
-#  y= 9-11 | R18  R19  R20  R21  R22  R23 |  ← mid field
-#  y= 6- 8 | R12  R13  R14  R15  R16  R17 |  ← behind towers
-#  y= 3- 5 | R06  R07  R08  R09  R10  R11 |  ← king area
-#  y= 0- 2 | R00  R01  R02  R03  R04  R05 |  ← deep back
-#            x0-2  x3-5  x6-8  x9-11 x12-14 x15-17
+# Player 0 base deploy zone: y=0..14 (below river)
+# Expands when enemy towers die: y=0..17 (after princess), y=0..31 (after king)
+# Spells can target anywhere.
 
+GRID_X = 18  # arena width in tiles
+GRID_Y = 15  # player 0 base deploy height (y=0 to y=14)
+
+
+def tile_to_position(tile_x: int, tile_y: int) -> Position:
+    """Convert tile indices to arena Position (tile center)."""
+    return Position(tile_x + 0.5, tile_y + 0.5)
+
+
+# Keep region helpers for backward compatibility (selfplay, expert, etc.)
+N_REGIONS = 30  # legacy
 X_BINS = [(0, 2), (3, 5), (6, 8), (9, 11), (12, 14), (15, 17)]
 Y_BINS = [(0, 2), (3, 5), (6, 8), (9, 11), (12, 14)]
-N_REGIONS = len(X_BINS) * len(Y_BINS)  # 30
-
-# Pre-compute region centers
 REGION_CENTERS: List[Tuple[float, float]] = []
 for y0, y1 in Y_BINS:
     for x0, x1 in X_BINS:
-        cx = (x0 + x1) / 2.0 + 0.5
-        cy = (y0 + y1) / 2.0 + 0.5
-        REGION_CENTERS.append((cx, cy))
-
+        REGION_CENTERS.append(((x0 + x1) / 2.0 + 0.5, (y0 + y1) / 2.0 + 0.5))
 
 def region_to_position(region_idx: int) -> Position:
-    """Convert region index (0-29) to arena Position."""
     cx, cy = REGION_CENTERS[region_idx]
     return Position(cx, cy)
 
-
 def position_to_region(x: float, y: float) -> int:
-    """Convert arena coordinates to region index."""
     xi = min(5, max(0, int(x) // 3))
     yi = min(4, max(0, int(y) // 3))
     return yi * 6 + xi
@@ -137,9 +136,10 @@ def rule_bot_policy(battle: BattleState) -> None:
 class ClashRoyaleEnv(gym.Env):
     """Gymnasium environment for 2.6 Hog Cycle mirror match.
 
-    Two-step action: MultiDiscrete([5, 30])
+    Three-head action: MultiDiscrete([5, 18, 15])
       action[0] = card choice (0=WAIT, 1-4=hand slot)
-      action[1] = region (0-29, ignored if WAIT)
+      action[1] = tile_x (0-17, ignored if WAIT)
+      action[2] = tile_y (0-14, ignored if WAIT)
     """
 
     metadata = {"render_modes": []}
@@ -172,8 +172,8 @@ class ClashRoyaleEnv(gym.Env):
         else:
             raise ValueError(f"Unknown opponent: {opponent}")
 
-        # Two-step action space
-        self.action_space = spaces.MultiDiscrete([N_CARD_CHOICES, N_REGIONS])
+        # Three-head action space: card × tile_x × tile_y
+        self.action_space = spaces.MultiDiscrete([N_CARD_CHOICES, GRID_X, GRID_Y])
 
         # Observation
         self.observation_space = spaces.Box(
@@ -231,7 +231,8 @@ class ClashRoyaleEnv(gym.Env):
         assert self.battle is not None, "Call reset() first"
 
         card_choice = int(action[0])
-        region = int(action[1])
+        tile_x = int(action[1])
+        tile_y = int(action[2])
 
         # 1. Execute action
         deployed = False
@@ -240,7 +241,7 @@ class ClashRoyaleEnv(gym.Env):
             player = self.battle.players[0]
             if slot < len(player.hand):
                 card_name = player.hand[slot]
-                pos = region_to_position(region)
+                pos = tile_to_position(tile_x, tile_y)
                 deployed = self.battle.deploy_card(0, card_name, pos)
 
         # 2. Opponent acts
@@ -275,20 +276,22 @@ class ClashRoyaleEnv(gym.Env):
 
         return obs, reward, terminated, truncated, info
 
-    def action_masks(self) -> Tuple[np.ndarray, np.ndarray]:
-        """Return masks for both action dimensions.
+    def action_masks(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return masks for all three action dimensions.
 
         Returns:
             card_mask: shape (5,) — which card choices are valid
-            region_mask: shape (30,) — which regions are valid for deployment
+            x_mask: shape (18,) — which x columns have valid tiles
+            y_mask: shape (15,) — which y rows have valid tiles
         """
         card_mask = np.zeros(N_CARD_CHOICES, dtype=bool)
         card_mask[0] = True  # WAIT always valid
 
-        region_mask = np.ones(N_REGIONS, dtype=bool)  # all regions valid by default
+        x_mask = np.ones(GRID_X, dtype=bool)
+        y_mask = np.ones(GRID_Y, dtype=bool)
 
         if self.battle is None or self.battle.game_over:
-            return card_mask, region_mask
+            return card_mask, x_mask, y_mask
 
         player = self.battle.players[0]
 
@@ -298,22 +301,22 @@ class ClashRoyaleEnv(gym.Env):
             if player.elixir >= cost:
                 card_mask[slot + 1] = True
 
-        # Region masking: check which regions have valid deploy tiles
-        for r in range(N_REGIONS):
-            pos = region_to_position(r)
-            if not self.battle.arena.can_deploy_at(pos, 0, self.battle, False, None):
-                # Check if it's valid for spells (any card in hand is a spell)
-                from .spells import SPELL_REGISTRY
-                from .card_aliases import resolve_card_name
-                any_spell_in_hand = any(
-                    resolve_card_name(c, self.battle.card_loader.load_card_definitions())
-                    in SPELL_REGISTRY
-                    for c in player.hand
-                )
-                if not any_spell_in_hand:
-                    region_mask[r] = False
+        # x/y masks: check which columns and rows have at least one valid tile
+        # This is an approximation — the full valid set is x×y specific,
+        # but independent masks are what MultiDiscrete supports
+        if not self.use_rust:
+            valid_x = set()
+            valid_y = set()
+            for tx in range(GRID_X):
+                for ty in range(GRID_Y):
+                    pos = tile_to_position(tx, ty)
+                    if self.battle.arena.can_deploy_at(pos, 0, self.battle, False, None):
+                        valid_x.add(tx)
+                        valid_y.add(ty)
+            x_mask = np.array([x in valid_x for x in range(GRID_X)], dtype=bool)
+            y_mask = np.array([y in valid_y for y in range(GRID_Y)], dtype=bool)
 
-        return card_mask, region_mask
+        return card_mask, x_mask, y_mask
 
     # ── Observation ───────────────────────────────────────────────────────
 
