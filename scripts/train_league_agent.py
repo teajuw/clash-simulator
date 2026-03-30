@@ -111,7 +111,7 @@ def make_pool_opponent(snapshot_dir: str, role: str):
         return sorted(glob(os.path.join(snapshot_dir, "main_*.zip")))
 
     # Cache: opponent model + which snapshot it came from
-    state = {"model": None, "snapshot": None, "loaded_at": 0, "reload_every": 50}
+    state = {"model": None, "snapshot": None, "loaded_at": 0, "reload_every": 10}
 
     def opponent_fn(battle):
         """Act as player 1 using a loaded snapshot."""
