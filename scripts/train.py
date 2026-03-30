@@ -1,3 +1,4 @@
+#!/usr/bin/env python3 -u
 """Train DQN and PPO on the Clash Royale 2.6 Hog Cycle environment.
 
 Usage:
@@ -6,9 +7,13 @@ Usage:
 """
 
 import argparse
+import functools
 import os
 import sys
 import time
+
+# Force unbuffered output so tail -f works
+print = functools.partial(print, flush=True)
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 

@@ -1,3 +1,4 @@
+#!/usr/bin/env python3 -u
 """Behavioral cloning from expert demonstrations, then RL fine-tuning.
 
 Usage:
@@ -12,9 +13,13 @@ Usage:
 """
 
 import argparse
+import functools
 import os
 import sys
 import time
+
+# Force unbuffered output so tail -f works
+print = functools.partial(print, flush=True)
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
