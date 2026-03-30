@@ -371,6 +371,13 @@ class SelfPlayEnv(ClashRoyaleEnv):
 
 # ── Visual Display ────────────────────────────────────────────────────────────
 
+def _short_name(n: str) -> str:
+    """Shorten snapshot names for display: 'snapshot_ep000201' → 'ep201'."""
+    if n == "rule_bot":
+        return "bot"
+    return n.replace("snapshot_ep", "ep").lstrip("0") or "ep0"
+
+
 def render_pool_status(
     episode: int,
     pool_size: int,
@@ -385,50 +392,38 @@ def render_pool_status(
     opponent_dist: Optional[Dict[str, int]] = None,
     pool_stats: Optional[List[Tuple[str, int, int, float]]] = None,
 ) -> str:
-    """Render a clean terminal status display for self-play training."""
+    """Render compact training status line."""
+    from datetime import datetime
 
-    bar_width = 30
-    wr_filled = int(min(recent_wr, 100) / 100 * bar_width)
-    wr_bar = "█" * wr_filled + "░" * (bar_width - wr_filled)
+    timestamp = datetime.now().strftime("%H:%M:%S")
 
     if pool_size <= 1:
-        phase = "RULE BOT"
+        phase = "BOT"
     elif pool_size <= 5:
-        phase = "EARLY SELF-PLAY"
+        phase = "EARLY"
     else:
-        phase = "SELF-PLAY"
+        phase = "SELF"
 
-    lines = [
-        f"┌────────────────────────────────────────────────────────┐",
-        f"│  {phase:<18s}  Pool: {pool_size:2d}  Ep: {episode:<5d}  {steps:>8,} steps │",
-        f"├────────────────────────────────────────────────────────┤",
-        f"│  Recent WR:  [{wr_bar}] {recent_wr:4.1f}%  │",
-        f"│  Overall:    {wins}W / {losses}L ({win_rate:4.1f}%)   R={avg_reward:+.1f}  {elapsed:.0f}s │",
-        f"│  Elo: {agent_elo:.0f}  (rule_bot=1000)                            │",
-    ]
-
-    # Show opponent distribution for last 20 games
+    # Opponent mix summary
+    opp_str = ""
     if opponent_dist:
-        def _short(n):
-            if n == "rule_bot":
-                return "bot"
-            return n.replace("snapshot_ep", "ep").lstrip("0") or "ep0"
-        dist_str = "  ".join(f"{_short(n)}:{c}" for n, c in sorted(opponent_dist.items(), key=lambda x: -x[1])[:5])
-        lines.append(f"│  Opponents:  {dist_str:<42s}│")
+        top = sorted(opponent_dist.items(), key=lambda x: -x[1])[:3]
+        opp_str = " ".join(f"{_short_name(n)}:{c}" for n, c in top)
 
-    # Show top 3 hardest opponents (highest PFSP weight, with games played)
+    # Hardest opponent
+    hard_str = ""
     if pool_stats and len(pool_stats) > 1:
-        # Filter to opponents with at least 1 game, then sort by PFSP weight
         played = [(n, w, l, p) for n, w, l, p in pool_stats if w + l > 0]
         if played:
-            hardest = sorted(played, key=lambda x: -x[3])[:3]
-            # Shorten names: "snapshot_ep000201" → "ep200"
-            def short_name(n):
-                if n == "rule_bot":
-                    return "bot"
-                return n.replace("snapshot_ep", "ep").lstrip("0") or "ep0"
-            hard_str = "  ".join(f"{short_name(n)}({w}W/{l}L {p:.0f}%)" for n, w, l, p in hardest)
-            lines.append(f"│  Hardest:    {hard_str:<42s}│")
+            h = sorted(played, key=lambda x: -x[3])[0]
+            hard_str = f"{_short_name(h[0])}({h[1]}W/{h[2]}L)"
 
-    lines.append(f"└────────────────────────────────────────────────────────┘")
-    return "\n".join(lines)
+    return (
+        f"[{timestamp}] "
+        f"ep={episode:<5d} steps={steps:>9,} | "
+        f"{phase:<5s} pool={pool_size:2d} | "
+        f"elo={agent_elo:6.0f} | "
+        f"WR={recent_wr:4.1f}% cum={win_rate:4.1f}% | "
+        f"R={avg_reward:+6.1f} | "
+        f"vs=[{opp_str}] hard={hard_str}"
+    )

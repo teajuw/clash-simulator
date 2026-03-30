@@ -98,11 +98,11 @@ class SelfPlayCallback(BaseCallback):
                         wins += 1
                     break
         wr = wins / n_games * 100
+        from datetime import datetime
         self.benchmark_history.append((self.episode_count, wr))
-        # Show trend
-        history_str = " → ".join(f"{wr:.0f}%" for _, wr in self.benchmark_history[-5:])
-        print(f"  ⚡ BENCHMARK vs rule_bot: {wins}/{n_games} ({wr:.0f}%)  [{history_str}]")
-        print()
+        history_str = "→".join(f"{w:.0f}%" for _, w in self.benchmark_history[-6:])
+        ts = datetime.now().strftime("%H:%M:%S")
+        print(f"[{ts}] *** BENCH vs bot: {wins}/{n_games} ({wr:.0f}%)  trend=[{history_str}]")
 
     def _display(self):
         total = self.wins + self.losses + self.draws
