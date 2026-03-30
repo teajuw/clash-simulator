@@ -44,9 +44,10 @@ def main():
     print(f"  Snapshot pool: {args.snapshot_dir}/")
     print(f"  Save every: {args.save_every} episodes")
     print()
-    print("  Agent 0: MAIN AGENT      — plays full pool (PFSP), ent=0.025")
-    print("  Agent 1: MAIN EXPLOITER  — plays only vs Main, ent=0.10")
-    print("  Agent 2: LEAGUE EXPLOITER — plays random pool, ent=0.05")
+    print("  MAIN  — best overall player, PFSP vs pool, ent=0.025")
+    print("  MMAX  — minimax exploiter, uses main's critic, ent=0.03")
+    print("  XPLR  — entropy explorer, high→low schedule, ent=0.10→0.02")
+    print("  LEAG  — league generalist, uniform random pool, ent=0.05")
     print("=" * 65)
     print()
 
@@ -67,10 +68,18 @@ def main():
         },
         {
             "name": "EXPLOITER",
-            "role": "main_exploiter",
-            "ent_coef": 0.10,
+            "role": "minimax_exploiter",
+            "ent_coef": 0.03,
             "seed": 123,
-            "log_prefix": "[EXPL]",
+            "log_prefix": "[MMAX]",
+            "resume": None,
+        },
+        {
+            "name": "EXPLORER",
+            "role": "entropy_explorer",
+            "ent_coef": 0.10,
+            "seed": 789,
+            "log_prefix": "[XPLR]",
             "resume": None,
         },
         {

@@ -128,6 +128,8 @@ class ClashRoyaleEnvV2(gym.Env):
         self.render_mode = render_mode
 
         self.adversarial = adversarial
+        self._minimax_alpha = 0.0  # set externally for minimax exploiter
+        self._minimax_critic = None  # main's value function, loaded externally
 
         if backend == "auto":
             self.use_rust = RUST_AVAILABLE
@@ -385,12 +387,27 @@ class ClashRoyaleEnvV2(gym.Env):
         r_crowns = crowns_scored * 20.0 - crowns_lost * 30.0
         base_reward = dmg_dealt - dmg_taken + r_crowns + r_win + r_leak
 
-        if self.adversarial:
-            # Same reward structure as main, but with a win bonus multiplier.
-            # The exploit comes from high entropy + playing only vs main,
-            # not from a different reward. The 2x win bonus makes the
-            # exploiter care MORE about winning against this specific opponent.
-            return base_reward + (r_win * 1.0)  # extra +50/-50 on top (total ±100)
+        if self.adversarial and self._minimax_critic is not None:
+            # Minimax: subtract main's value estimate of the current state.
+            # If main thinks the state is good for main (high V), exploiter
+            # gets penalized. If main thinks it's bad (low V), exploiter
+            # gets rewarded. This drives the exploiter toward states that
+            # main's critic rates as dangerous.
+            import torch
+            obs = self._get_obs()
+            with torch.no_grad():
+                # Build tensor from dict observation
+                spatial_t = torch.FloatTensor(obs["spatial"]).unsqueeze(0)
+                scalar_t = torch.FloatTensor(obs["scalars"]).unsqueeze(0)
+                obs_t = {"spatial": spatial_t, "scalars": scalar_t}
+                main_value = self._minimax_critic(obs_t).item()
+            # Minimax term: penalize states main values highly
+            # Clamp to at most 0 (only penalize, never reward for already-bad states)
+            minimax_bonus = min(0.0, -self._minimax_alpha * main_value)
+            return base_reward + minimax_bonus
+        elif self.adversarial:
+            # Adversarial without critic loaded yet — use win bonus multiplier
+            return base_reward + (r_win * 1.0)
         else:
             return base_reward
 

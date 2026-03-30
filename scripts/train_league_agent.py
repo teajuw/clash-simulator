@@ -124,7 +124,7 @@ def make_pool_opponent(snapshot_dir: str, role: str):
                 _simple_opponent(battle)
                 return
 
-            if role == "main_exploiter":
+            if role in ("minimax_exploiter", "entropy_explorer"):
                 main_zips = _get_main_snapshots()
                 path = main_zips[-1] if main_zips else zips[-1]
             elif role == "main" and pfsp:
@@ -245,8 +245,7 @@ def _mirror_obs(battle):
 
 class LeagueCallback(BaseCallback):
     def __init__(self, role, log_prefix, log_every, save_every,
-                 snapshot_dir, ent_coef, pfsp=None, opponent_state=None,
-                 reset_every=2500):
+                 snapshot_dir, ent_coef, pfsp=None, opponent_state=None):
         super().__init__(verbose=0)
         self.role = role
         self.log_prefix = log_prefix
@@ -254,9 +253,8 @@ class LeagueCallback(BaseCallback):
         self.save_every = save_every
         self.snapshot_dir = snapshot_dir
         self.ent_coef = ent_coef
-        self.reset_every = reset_every
         self.pfsp = pfsp
-        self.opponent_state = opponent_state  # shared state dict from opponent_fn
+        self.opponent_state = opponent_state
 
         self.episode_count = 0
         self.wins = 0
@@ -265,7 +263,47 @@ class LeagueCallback(BaseCallback):
         self.episode_winners = []
         self._current_reward = 0.0
         self._start_time = time.time()
-        self._post_reset_lr_steps = 0  # LR warmup counter after exploiter reset
+        self._post_reset_lr_steps = 0
+        # Explorer entropy schedule state
+        self._explorer_phase = "explore"  # "explore" or "exploit"
+        self._explorer_phase_start = 0
+        # Rolling WR for performance-based decisions
+        self._recent_window = 100
+
+    def _recent_wr(self) -> float:
+        """Win rate over last N episodes."""
+        recent = self.episode_winners[-self._recent_window:]
+        if not recent:
+            return 0.5
+        return sum(1 for w in recent if w == 0) / len(recent)
+
+    def _reset_to_main(self):
+        """Copy latest main agent's weights into this agent.
+        For minimax exploiter, also load main's critic for reward shaping."""
+        main_zips = sorted(glob(os.path.join(self.snapshot_dir, "main_*.zip")))
+        if not main_zips:
+            return
+        try:
+            latest_main = main_zips[-1].replace(".zip", "")
+            main_model = PPO.load(latest_main)
+            self.model.policy.load_state_dict(main_model.policy.state_dict())
+            self._post_reset_lr_steps = 300
+            # For minimax: update the critic reference in the env
+            if self.role == "minimax_exploiter":
+                self.model.env._minimax_critic = main_model.policy.predict_values
+            print(f"{self.log_prefix} Reset to {Path(latest_main).stem}")
+        except Exception:
+            pass
+
+    def _quality_save(self, min_wr: float = 0.6):
+        """Save snapshot only if recent WR exceeds threshold."""
+        if self._recent_wr() >= min_wr:
+            path = os.path.join(self.snapshot_dir,
+                                f"{self.role}_{self.episode_count}")
+            self.model.save(path)
+            print(f"{self.log_prefix} Saved exploit (WR={self._recent_wr():.0%})")
+            return True
+        return False
 
     def _on_step(self) -> bool:
         self._current_reward += self.locals.get("rewards", [0])[0]
@@ -276,11 +314,11 @@ class LeagueCallback(BaseCallback):
             self.episode_rewards.append(self._current_reward)
             self._current_reward = 0.0
 
-            # Post-reset LR decay: 1e-3 → 3e-4 over 500 episodes
+            # LR decay after reset
             if self._post_reset_lr_steps > 0:
                 self._post_reset_lr_steps -= 1
-                progress = self._post_reset_lr_steps / 500.0  # 1.0 → 0.0
-                lr = 3e-4 + (1e-3 - 3e-4) * progress  # 1e-3 → 3e-4
+                progress = self._post_reset_lr_steps / 300.0
+                lr = 3e-4 + (7e-4) * progress  # 1e-3 → 3e-4
                 for pg in self.model.policy.optimizer.param_groups:
                     pg['lr'] = lr
 
@@ -292,34 +330,73 @@ class LeagueCallback(BaseCallback):
             elif winner == 1:
                 self.losses += 1
 
-            # PFSP: record result for main agent's opponent weighting
+            # PFSP recording (main agent only)
             if self.pfsp and self.opponent_state:
                 snap = self.opponent_state.get("snapshot")
                 if snap:
                     self.pfsp.record(snap, winner == 0)
 
-            # Save snapshot with role prefix
-            if self.episode_count % self.save_every == 0:
-                path = os.path.join(self.snapshot_dir,
-                                    f"{self.role}_{self.episode_count}")
-                self.model.save(path)
+            # ── Role-specific logic ──────────────────────────────────
 
-            # Main exploiter: reset to latest main agent's weights periodically
-            # This gives the exploiter a competent starting point, then the
-            # adversarial reward drives it to find main's specific weaknesses.
-            if self.role == "main_exploiter" and self.episode_count % self.reset_every == 0:
-                main_zips = sorted(glob(os.path.join(self.snapshot_dir, "main_*.zip")))
-                if main_zips:
-                    try:
-                        latest_main = main_zips[-1].replace(".zip", "")
-                        main_model = PPO.load(latest_main)
-                        # Copy main's weights
-                        self.model.policy.load_state_dict(main_model.policy.state_dict())
-                        # Bump LR: fast adaptation right after reset
-                        self._post_reset_lr_steps = 500  # decay back over 500 episodes
-                        print(f"{self.log_prefix} Reset to {Path(latest_main).stem}")
-                    except Exception:
-                        pass
+            if self.role == "main":
+                # Save on schedule
+                if self.episode_count % self.save_every == 0:
+                    path = os.path.join(self.snapshot_dir,
+                                        f"main_{self.episode_count}")
+                    self.model.save(path)
+
+            elif self.role == "minimax_exploiter":
+                # Load main's critic if not yet loaded
+                if (self.model.env._minimax_critic is None
+                        and self.episode_count % 50 == 0):
+                    main_zips = sorted(glob(os.path.join(self.snapshot_dir, "main_*.zip")))
+                    if main_zips:
+                        try:
+                            m = PPO.load(main_zips[-1].replace(".zip", ""))
+                            self.model.env._minimax_critic = m.policy.predict_values
+                            print(f"{self.log_prefix} Loaded main critic")
+                        except Exception:
+                            pass
+                # Save only quality exploits
+                if self.episode_count % self.save_every == 0:
+                    self._quality_save(min_wr=0.6)
+                # Reset when exploit is found (WR > 70%) — find the NEXT one
+                if (self.episode_count > 500
+                        and self.episode_count % 100 == 0
+                        and self._recent_wr() > 0.70):
+                    print(f"{self.log_prefix} Exploit found (WR={self._recent_wr():.0%}), resetting")
+                    self._quality_save(min_wr=0.5)
+                    self._reset_to_main()
+
+            elif self.role == "entropy_explorer":
+                # Entropy schedule: explore (0.10) for 200 eps, exploit (0.02) after
+                eps_in_phase = self.episode_count - self._explorer_phase_start
+                if self._explorer_phase == "explore" and eps_in_phase >= 200:
+                    self._explorer_phase = "exploit"
+                    self._explorer_phase_start = self.episode_count
+                    self.model.ent_coef = 0.02
+                    print(f"{self.log_prefix} Phase: exploit (ent→0.02)")
+
+                # Save quality exploits during exploit phase
+                if self._explorer_phase == "exploit" and self.episode_count % self.save_every == 0:
+                    self._quality_save(min_wr=0.6)
+
+                # Reset when exploit phase fails (WR < 40%)
+                if (self._explorer_phase == "exploit"
+                        and eps_in_phase >= 200
+                        and self._recent_wr() < 0.40):
+                    self._explorer_phase = "explore"
+                    self._explorer_phase_start = self.episode_count
+                    self.model.ent_coef = 0.10
+                    self._reset_to_main()
+                    print(f"{self.log_prefix} Exploit failed, resetting (ent→0.10)")
+
+            elif self.role == "league_exploiter":
+                # Save on schedule (no quality gate — diverse strategies welcome)
+                if self.episode_count % self.save_every == 0:
+                    path = os.path.join(self.snapshot_dir,
+                                        f"league_exploiter_{self.episode_count}")
+                    self.model.save(path)
 
             # Display
             if self.episode_count % self.log_every == 0:
@@ -361,7 +438,7 @@ class LeagueCallback(BaseCallback):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--role", required=True,
-                        choices=["main", "main_exploiter", "league_exploiter"])
+                        choices=["main", "minimax_exploiter", "entropy_explorer", "league_exploiter"])
     parser.add_argument("--ent-coef", type=float, default=0.02)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--timesteps", type=int, default=50_000_000)
@@ -380,10 +457,14 @@ def main():
     opp_state = getattr(opponent_fn, '_state', None)
 
     # Create env with custom opponent
-    # Main exploiter uses adversarial reward (optimized to break main)
-    is_adversarial = args.role == "main_exploiter"
+    is_adversarial = args.role == "minimax_exploiter"
     env = ClashRoyaleEnv(opponent="none", adversarial=is_adversarial)
     env._opponent_fn = opponent_fn
+
+    # Minimax exploiter: load main's critic for reward shaping
+    main_critic = None
+    if args.role == "minimax_exploiter":
+        env._minimax_alpha = 0.01  # weight of minimax term
 
     from clasher.network import CRFeatureExtractor
     policy_kwargs = dict(
