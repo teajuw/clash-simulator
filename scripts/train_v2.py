@@ -31,8 +31,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--timesteps", type=int, default=500_000)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--device", type=str, default="auto",
-                        help="cpu, mps, cuda, or auto")
+    parser.add_argument("--device", type=str, default="cpu",
+                        help="cpu, mps, cuda (cpu is fastest for our network size)")
     parser.add_argument("--log-every", type=int, default=50)
     parser.add_argument("--lstm", action="store_true",
                         help="Use RecurrentPPO with LSTM")
