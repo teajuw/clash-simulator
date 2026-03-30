@@ -146,6 +146,7 @@ class ClashRoyaleEnv(gym.Env):
         self._prev_opp_tower_hp = 0.0
         self._prev_my_crowns = 0
         self._prev_opp_crowns = 0
+        self._prev_opp_entity_hp = 0.0
 
     # ── Gym API ───────────────────────────────────────────────────────────
 
@@ -171,11 +172,12 @@ class ClashRoyaleEnv(gym.Env):
         # Clear deploy grid cache
         self._deploy_grid = None
 
-        # Record initial tower state for reward
+        # Record initial state for reward
         self._prev_my_tower_hp = self._total_tower_hp(0)
         self._prev_opp_tower_hp = self._total_tower_hp(1)
         self._prev_my_crowns = 0
         self._prev_opp_crowns = 0
+        self._prev_opp_entity_hp = self._total_entity_hp(self.battle, 1)
 
         obs = self._get_obs()
         info = {"battle_time": 0.0}
@@ -378,22 +380,32 @@ class ClashRoyaleEnv(gym.Env):
         return obs
 
     def _compute_reward(self, deployed: bool = False) -> float:
-        """Dense reward from tower HP changes + crown bonuses + win bonus.
+        """Dense reward from tower HP, entity damage, crowns, and win bonus.
 
-        Reward shaping:
-        - Small bonus for deploying a card (encourages action over passivity)
-        - Penalty for leaking elixir at 10 (encourages spending)
+        Reward components:
+        - Tower damage dealt/taken (primary objective)
+        - Entity damage dealt (dense signal — rewards combat engagement)
+        - Crown bonus (milestone reward)
+        - Win/loss terminal bonus
+        - Elixir leak penalty (continuous, proportional above 8)
         """
         my_hp = self._total_tower_hp(0)
         opp_hp = self._total_tower_hp(1)
 
         # Tower damage deltas (normalized)
-        damage_dealt = (self._prev_opp_tower_hp - opp_hp) / MAX_TOTAL_HP
-        damage_taken = (self._prev_my_tower_hp - my_hp) / MAX_TOTAL_HP
+        tower_damage_dealt = (self._prev_opp_tower_hp - opp_hp) / MAX_TOTAL_HP
+        tower_damage_taken = (self._prev_my_tower_hp - my_hp) / MAX_TOTAL_HP
+
+        # Entity damage dealt — any damage to enemy troops/buildings
+        # This gives dense signal even before reaching towers
+        opp_entity_hp = self._total_entity_hp(self.battle, 1)
+        entity_damage = max(0, self._prev_opp_entity_hp - opp_entity_hp)
+        # Normalize: a typical troop has ~1000 HP, normalize by 5000
+        entity_damage_norm = entity_damage / 5000.0
 
         # Crown deltas
-        my_crowns = self.battle.players[1].get_crown_count()  # towers I destroyed
-        opp_crowns = self.battle.players[0].get_crown_count()  # towers opponent destroyed
+        my_crowns = self.battle.players[1].get_crown_count()
+        opp_crowns = self.battle.players[0].get_crown_count()
         crown_delta = (
             (my_crowns - self._prev_my_crowns)
             - (opp_crowns - self._prev_opp_crowns)
@@ -407,24 +419,38 @@ class ClashRoyaleEnv(gym.Env):
             elif self.battle.winner == 1:
                 win_bonus = -50.0
 
-        # Reward shaping
-        deploy_bonus = 0.01 if deployed else 0.0
-        leak_penalty = -0.02 if self.battle.players[0].elixir >= 9.8 else 0.0
+        # Elixir leak penalty — continuous above 8 elixir
+        elixir = self.battle.players[0].elixir
+        leak_penalty = -0.005 * max(0, elixir - 8.0)  # -0.01 at 10 elixir per step
 
         # Update previous state
         self._prev_my_tower_hp = my_hp
         self._prev_opp_tower_hp = opp_hp
         self._prev_my_crowns = my_crowns
         self._prev_opp_crowns = opp_crowns
+        self._prev_opp_entity_hp = opp_entity_hp
 
         return (
-            damage_dealt * 0.5
-            - damage_taken * 0.5
+            tower_damage_dealt * 1.0
+            - tower_damage_taken * 0.5
+            + entity_damage_norm * 0.1
             + crown_delta * 10.0
             + win_bonus
-            + deploy_bonus
             + leak_penalty
         )
+
+    @staticmethod
+    def _total_entity_hp(battle: BattleState, player_id: int) -> float:
+        """Sum HP of all living non-tower entities for a player."""
+        total = 0.0
+        for e in battle.entities.values():
+            if not e.is_alive or e.player_id != player_id:
+                continue
+            if isinstance(e, Building) and e.position.y in (2.5, 6.5, 25.5, 29.5):
+                continue  # skip towers
+            if isinstance(e, (Troop, Building)):
+                total += e.hitpoints
+        return total
 
     def _total_tower_hp(self, player_id: int) -> float:
         """Sum of king + left + right tower HP for a player."""
