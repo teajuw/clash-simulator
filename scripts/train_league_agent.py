@@ -294,7 +294,7 @@ class LeagueCallback(BaseCallback):
             self._post_reset_lr_steps = 300
             # For minimax: update the critic reference in the env
             if self.role == "minimax_exploiter":
-                self.model.env.envs[0]._minimax_critic = main_model.policy.predict_values
+                self.model.env.envs[0].unwrapped._minimax_critic = main_model.policy.predict_values
             print(f"{self.log_prefix} Reset to {Path(latest_main).stem}")
         except Exception:
             pass
@@ -351,13 +351,13 @@ class LeagueCallback(BaseCallback):
 
             elif self.role == "minimax_exploiter":
                 # Load main's critic if not yet loaded
-                if (self.model.env.envs[0]._minimax_critic is None
+                if (self.model.env.envs[0].unwrapped._minimax_critic is None
                         and self.episode_count % 50 == 0):
                     main_zips = sorted(glob(os.path.join(self.snapshot_dir, "main_*.zip")))
                     if main_zips:
                         try:
                             m = PPO.load(main_zips[-1].replace(".zip", ""))
-                            self.model.env.envs[0]._minimax_critic = m.policy.predict_values
+                            self.model.env.envs[0].unwrapped._minimax_critic = m.policy.predict_values
                             print(f"{self.log_prefix} Loaded main critic")
                         except Exception:
                             pass
