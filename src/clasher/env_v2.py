@@ -32,6 +32,8 @@ from .battle import BattleState
 from .entities import Building, Troop
 from .tournament_standard import apply_tournament_overrides
 
+from .card_tracker import CardTracker
+
 try:
     from .rust_backend import RustBattle, RUST_AVAILABLE
 except ImportError:
@@ -69,8 +71,11 @@ MAX_KING_HP = 4824.0
 MAX_PRINCESS_HP = 3052.0
 MAX_GAME_TIME = 360.0
 
-# Scalar observation size: 2 elixir + 6 tower HP + 4 hand + 1 next + 1 time + 1 phase = 15
-N_SCALARS = 15
+# Scalar observation size:
+#   2 elixir + 6 tower HP + 1 time + 1 phase = 10
+#   + 8 own cycle position + 8 opponent hand estimate = 16 card tracking
+#   = 26 total
+N_SCALARS = 26
 
 
 def tile_to_position(tx: int, ty: int) -> Position:
@@ -159,6 +164,8 @@ class ClashRoyaleEnvV2(gym.Env):
         self._prev_my_crowns = 0
         self._prev_opp_crowns = 0
         self._cards_played_this_step = 0
+        self._card_tracker = CardTracker()
+        self._prev_opp_hand: list = []  # track opponent hand changes
 
     # ── Gym API ───────────────────────────────────────────────────────────
 
@@ -187,6 +194,15 @@ class ClashRoyaleEnvV2(gym.Env):
         self._prev_my_crowns = 0
         self._prev_opp_crowns = 0
 
+        # Initialize card tracker with our hand order
+        self._card_tracker.reset()
+        p0 = self.battle.players[0]
+        hand_idx = [CARD_TO_IDX.get(c, 0) for c in p0.hand]
+        queue_idx = [CARD_TO_IDX.get(c, 0) for c in p0.cycle_queue]
+        self._card_tracker.set_own_hand(hand_idx, queue_idx)
+        # Snapshot opponent hand to detect plays
+        self._prev_opp_hand = list(self.battle.players[1].hand)
+
         return self._get_obs(), {"battle_time": 0.0}
 
     def step(self, action):
@@ -203,12 +219,22 @@ class ClashRoyaleEnvV2(gym.Env):
             player = self.battle.players[0]
             if slot < len(player.hand):
                 card_name = player.hand[slot]
+                card_idx = CARD_TO_IDX.get(card_name, 0)
                 pos = tile_to_position(tile_x, tile_y)
                 if self.battle.deploy_card(0, card_name, pos):
                     self._cards_played_this_step = 1
+                    self._card_tracker.own_card_played(card_idx)
 
         # 2. Opponent acts
         self._opponent_fn(self.battle)
+
+        # 2b. Detect opponent card plays by comparing hands
+        opp_hand_now = list(self.battle.players[1].hand)
+        for old_card in self._prev_opp_hand:
+            if old_card not in opp_hand_now:
+                card_idx = CARD_TO_IDX.get(old_card, 0)
+                self._card_tracker.opponent_card_played(card_idx)
+        self._prev_opp_hand = opp_hand_now
 
         # 3. Advance simulation
         if self.use_rust:
@@ -281,9 +307,12 @@ class ClashRoyaleEnvV2(gym.Env):
                 )
                 spatial[2, gy, gx] = 0.0 if entity.player_id == 0 else 1.0
 
-        # ── Scalar features (15) ──
+        # ── Scalar features (26) ──
+        # [0-1] Elixir
         scalars[0] = p0.elixir / 10.0
-        scalars[1] = p1.elixir / 10.0
+        scalars[1] = p1.elixir / 10.0  # in sim we have perfect info; real game would estimate
+
+        # [2-7] Tower HP
         scalars[2] = max(0, p0.king_tower_hp) / MAX_KING_HP
         scalars[3] = max(0, p0.left_tower_hp) / MAX_PRINCESS_HP
         scalars[4] = max(0, p0.right_tower_hp) / MAX_PRINCESS_HP
@@ -291,21 +320,21 @@ class ClashRoyaleEnvV2(gym.Env):
         scalars[6] = max(0, p1.left_tower_hp) / MAX_PRINCESS_HP
         scalars[7] = max(0, p1.right_tower_hp) / MAX_PRINCESS_HP
 
-        # Hand (4 cards, normalized)
-        for i in range(min(4, len(p0.hand))):
-            scalars[8 + i] = (CARD_TO_IDX.get(p0.hand[i], 0) + 1) / NUM_CARD_IDS
-
-        # Next card
-        if p0.cycle_queue:
-            scalars[12] = (CARD_TO_IDX.get(p0.cycle_queue[0], 0) + 1) / NUM_CARD_IDS
-
-        # Time + phase
-        scalars[13] = min(self.battle.time / MAX_GAME_TIME, 1.0)
-        scalars[14] = (
+        # [8-9] Time + phase
+        scalars[8] = min(self.battle.time / MAX_GAME_TIME, 1.0)
+        scalars[9] = (
             0.0 if not self.battle.double_elixir
             else 0.5 if not self.battle.triple_elixir
             else 1.0
         )
+
+        # [10-17] Own card cycle (perfect knowledge)
+        # 1.0 = in hand, 0.75 = next card, lower = further in queue
+        scalars[10:18] = self._card_tracker.get_own_observation()
+
+        # [18-25] Opponent hand estimate (deduced from observed plays)
+        # 0.5 = unknown, 0.0 = just played (cycling), 1.0 = definitely in hand
+        scalars[18:26] = self._card_tracker.get_opponent_observation()
 
         return {"spatial": spatial, "scalars": scalars}
 
