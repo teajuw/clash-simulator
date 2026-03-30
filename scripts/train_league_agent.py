@@ -246,7 +246,7 @@ def _mirror_obs(battle):
 class LeagueCallback(BaseCallback):
     def __init__(self, role, log_prefix, log_every, save_every,
                  snapshot_dir, ent_coef, pfsp=None, opponent_state=None,
-                 reset_every=10000):
+                 reset_every=2500):
         super().__init__(verbose=0)
         self.role = role
         self.log_prefix = log_prefix
@@ -385,6 +385,9 @@ def main():
         model = PPO.load(args.resume, env=env, device="cpu")
         model.ent_coef = args.ent_coef
     else:
+        # Exploiter uses higher LR: converge fast on opponent's weakness
+        lr = 1e-3 if args.role == "main_exploiter" else 3e-4
+
         model = PPO(
             "MultiInputPolicy",
             env,
@@ -397,7 +400,7 @@ def main():
             n_epochs=4,
             gamma=0.99,
             gae_lambda=0.95,
-            learning_rate=3e-4,
+            learning_rate=lr,
             clip_range=0.2,
             ent_coef=args.ent_coef,
         )
