@@ -128,7 +128,7 @@ class SelfPlayCallback(BaseCallback):
             agent_elo=self.env.pool.agent_elo,
             bench_wr=self._last_bench_wr,
             bench_trend=bench_trend,
-            opponent_dist=self.env.get_opponent_distribution(),
+            opponent_dist=self.env.get_opponent_distribution(window=self.log_every),
             pool_stats=self.env.pool.get_stats_summary(),
         )
         print(output)

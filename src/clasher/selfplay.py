@@ -410,7 +410,7 @@ class SelfPlayEnv(ClashRoyaleEnv):
         self.opponent.load(self._current_opponent_id)
         self.opponent_name = self.opponent.name
         self._recent_opponents.append(self.opponent_name)
-        if len(self._recent_opponents) > 20:
+        if len(self._recent_opponents) > 200:
             self._recent_opponents.pop(0)
 
         return super().reset(**kwargs)
@@ -419,10 +419,11 @@ class SelfPlayEnv(ClashRoyaleEnv):
         """Save current model to snapshot pool."""
         return self.pool.save_snapshot(model, self._episode_count)
 
-    def get_opponent_distribution(self) -> Dict[str, int]:
-        """How many of the last 20 games were against each opponent."""
+    def get_opponent_distribution(self, window: int = 100) -> Dict[str, int]:
+        """How many of the last N games were against each opponent."""
+        recent = self._recent_opponents[-window:]
         dist: Dict[str, int] = {}
-        for name in self._recent_opponents:
+        for name in recent:
             dist[name] = dist.get(name, 0) + 1
         return dist
 
