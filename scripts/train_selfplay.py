@@ -142,6 +142,8 @@ def main():
     parser.add_argument("--snapshot-dir", type=str, default="snapshots")
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to model to resume from")
+    parser.add_argument("--n-steps", type=int, default=1024,
+                        help="Steps per PPO rollout (higher=faster but more memory)")
     args = parser.parse_args()
 
     print("=" * 55)
@@ -168,8 +170,8 @@ def main():
             env,
             verbose=0,
             seed=args.seed,
-            n_steps=512,
-            batch_size=64,
+            n_steps=args.n_steps,
+            batch_size=128,
             n_epochs=4,
             gamma=0.99,
             gae_lambda=0.95,

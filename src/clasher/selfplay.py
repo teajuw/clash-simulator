@@ -32,6 +32,29 @@ from .env import (
 )
 
 
+# ── Name Generator ────────────────────────────────────────────────────────────
+
+_ADJECTIVES = [
+    "swift", "bold", "keen", "dark", "iron", "cold", "wild", "grim",
+    "pale", "rust", "neon", "void", "pure", "raw", "deep", "torn",
+    "stark", "haze", "flux", "zero", "null", "core", "edge", "volt",
+    "apex", "nova", "warp", "drift", "blaze", "frost", "ghost", "stone",
+]
+_NOUNS = [
+    "hog", "cannon", "musk", "tower", "log", "spirit", "golem", "skel",
+    "lance", "spark", "blade", "storm", "viper", "pulse", "fang", "bolt",
+    "rook", "pawn", "knight", "bishop", "sage", "forge", "anvil", "hex",
+    "arc", "claw", "pike", "axe", "helm", "ward", "sigil", "rune",
+]
+
+
+def _generate_name(episode: int) -> str:
+    """Generate a unique readable name like 'swift-hog-200'."""
+    adj = _ADJECTIVES[episode % len(_ADJECTIVES)]
+    noun = _NOUNS[(episode // len(_ADJECTIVES)) % len(_NOUNS)]
+    return f"{adj}-{noun}-{episode}"
+
+
 def _update_elo(rating_a: float, rating_b: float, a_won: bool, k: float = 32.0) -> Tuple[float, float]:
     """Standard Elo update. Returns (new_a, new_b)."""
     expected_a = 1.0 / (1.0 + 10.0 ** ((rating_b - rating_a) / 400.0))
@@ -60,24 +83,30 @@ class SnapshotPool:
         self.records: Dict[str, List[int]] = {self._rule_bot_id: [0, 0]}
         # Elo ratings: {opponent_id: rating}
         self.elo: Dict[str, float] = {self._rule_bot_id: 1000.0}
+        # Readable names: {path: "swift-hog-200"}
+        self.names: Dict[str, str] = {self._rule_bot_id: "bot"}
         # Current agent's Elo (the model being trained)
         self.agent_elo: float = 1000.0
 
         # Load any existing snapshots from disk
-        for f in sorted(self.snapshot_dir.glob("snapshot_ep*.zip")):
-            path = str(f).replace(".zip", "")  # SB3 adds .zip
+        for f in sorted(self.snapshot_dir.glob("*.zip")):
+            path = str(f).replace(".zip", "")
             if path not in self.snapshots:
                 self.snapshots.append(path)
                 self.records[path] = [0, 0]
                 self.elo[path] = 1000.0
+                # Derive name from filename
+                self.names[path] = Path(path).stem
 
     def save_snapshot(self, model, episode: int) -> str:
-        """Save a model checkpoint. Prunes oldest if pool is full."""
-        path = str(self.snapshot_dir / f"snapshot_ep{episode:06d}")
+        """Save a model checkpoint with a readable name. Prunes oldest if full."""
+        name = _generate_name(episode)
+        path = str(self.snapshot_dir / name)
         model.save(path)
         self.snapshots.append(path)
         self.records[path] = [0, 0]
-        self.elo[path] = self.agent_elo  # freeze current skill as this snapshot's rating
+        self.elo[path] = self.agent_elo
+        self.names[path] = name
 
         # Prune oldest (not rule bot, not latest 3) if over max
         while len(self.snapshots) > self.max_size:
@@ -157,7 +186,7 @@ class SnapshotPool:
         total_w = sum(weights) or 1.0
         for i, s in enumerate(self.snapshots):
             w, l = self.records.get(s, [0, 0])
-            name = "rule_bot" if s == self._rule_bot_id else Path(s).stem
+            name = self.names.get(s, Path(s).stem)
             prob = weights[i] / total_w * 100
             stats.append((name, w, l, prob))
         return stats
@@ -299,7 +328,7 @@ class SnapshotOpponent:
     @property
     def name(self) -> str:
         if self._opponent_id == "__rule_bot__":
-            return "rule_bot"
+            return "bot"
         return Path(self._opponent_id).stem
 
 
@@ -372,10 +401,15 @@ class SelfPlayEnv(ClashRoyaleEnv):
 # ── Visual Display ────────────────────────────────────────────────────────────
 
 def _short_name(n: str) -> str:
-    """Shorten snapshot names for display: 'snapshot_ep000201' → 'ep201'."""
-    if n == "rule_bot":
+    """Shorten snapshot names for display."""
+    if n == "rule_bot" or n == "bot":
         return "bot"
-    return n.replace("snapshot_ep", "ep").lstrip("0") or "ep0"
+    # If it's already a readable name like "swift-hog-200", use it
+    stem = Path(n).stem if "/" in n else n
+    # Strip old-style "snapshot_ep" prefix
+    if stem.startswith("snapshot_ep"):
+        return "ep" + stem.replace("snapshot_ep", "").lstrip("0") or "ep0"
+    return stem
 
 
 def render_pool_status(
