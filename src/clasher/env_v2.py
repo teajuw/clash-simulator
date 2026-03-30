@@ -74,8 +74,9 @@ MAX_GAME_TIME = 360.0
 # Scalar observation size:
 #   2 elixir + 6 tower HP + 1 time + 1 phase = 10
 #   + 8 own cycle position + 8 opponent hand estimate = 16 card tracking
-#   = 26 total
-N_SCALARS = 26
+#   + 4 can_afford flags = 4
+#   = 30 total
+N_SCALARS = 30
 
 
 def tile_to_position(tx: int, ty: int) -> Position:
@@ -335,6 +336,11 @@ class ClashRoyaleEnvV2(gym.Env):
         # [18-25] Opponent hand estimate (deduced from observed plays)
         # 0.5 = unknown, 0.0 = just played (cycling), 1.0 = definitely in hand
         scalars[18:26] = self._card_tracker.get_opponent_observation()
+
+        # [26-29] Can afford each hand slot (1.0 = yes, 0.0 = no)
+        for i in range(min(4, len(p0.hand))):
+            cost = ELIXIR_COST.get(p0.hand[i], 10)
+            scalars[26 + i] = 1.0 if p0.elixir >= cost else 0.0
 
         return {"spatial": spatial, "scalars": scalars}
 
