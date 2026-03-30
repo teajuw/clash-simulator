@@ -111,6 +111,10 @@ class SelfPlayCallback(BaseCallback):
         # Benchmark trend
         bench_trend = "→".join(f"{w:.0f}" for _, w in self.benchmark_history[-6:])
 
+        # Steps/sec
+        elapsed = time.time() - self._start_time
+        steps_per_sec = self.num_timesteps / elapsed if elapsed > 0 else 0
+
         output = render_pool_status(
             episode=self.episode_count,
             pool_size=self.env.pool.size,
@@ -142,12 +146,24 @@ def main():
                         help="Path to model to resume from")
     parser.add_argument("--n-steps", type=int, default=1024,
                         help="Steps per PPO rollout (higher=faster but more memory)")
+    parser.add_argument("--device", type=str, default="auto",
+                        help="Device: auto, cpu, mps, cuda")
     args = parser.parse_args()
+
+    # Device: CPU is fastest for MLP policies. GPU only helps with CNN.
+    device = args.device if args.device != "auto" else "cpu"
+
+    # Detect backend
+    try:
+        from clasher.rust_backend import RUST_AVAILABLE
+    except ImportError:
+        RUST_AVAILABLE = False
 
     print("=" * 55)
     print("  CLASH ROYALE RL — SELF-PLAY TRAINING")
     print("=" * 55)
     print(f"  Steps: {args.timesteps:,}")
+    print(f"  Device: {device}  |  Backend: {'rust' if RUST_AVAILABLE else 'python'}")
     print(f"  Snapshot pool: {args.snapshot_dir}/")
     print(f"  Save every: {args.save_every} episodes")
     print(f"  Seed: {args.seed}")
@@ -161,13 +177,14 @@ def main():
 
     if args.resume:
         print(f"Resuming from {args.resume}")
-        model = PPO.load(args.resume, env=env)
+        model = PPO.load(args.resume, env=env, device=device)
     else:
         model = PPO(
             "MlpPolicy",
             env,
             verbose=0,
             seed=args.seed,
+            device=device,
             n_steps=args.n_steps,
             batch_size=128,
             n_epochs=4,
