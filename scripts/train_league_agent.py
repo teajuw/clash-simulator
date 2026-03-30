@@ -385,8 +385,8 @@ def main():
         model = PPO.load(args.resume, env=env, device="cpu")
         model.ent_coef = args.ent_coef
     else:
-        # Exploiter uses higher LR: converge fast on opponent's weakness
-        lr = 1e-3 if args.role == "main_exploiter" else 3e-4
+        # Same LR for all — exploiter gets diversity from entropy + adversarial reward
+        lr = 3e-4
 
         model = PPO(
             "MultiInputPolicy",
