@@ -144,6 +144,8 @@ def main():
     parser.add_argument("--snapshot-dir", type=str, default="snapshots")
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to model to resume from")
+    parser.add_argument("--fresh", action="store_true",
+                        help="Wipe snapshot pool and start clean")
     parser.add_argument("--n-steps", type=int, default=1024,
                         help="Steps per PPO rollout (higher=faster but more memory)")
     parser.add_argument("--device", type=str, default="auto",
@@ -169,6 +171,12 @@ def main():
     print(f"  Seed: {args.seed}")
     print("=" * 55)
     print()
+
+    if args.fresh:
+        import shutil
+        if os.path.exists(args.snapshot_dir):
+            shutil.rmtree(args.snapshot_dir)
+            print(f"  Wiped {args.snapshot_dir}/")
 
     env = SelfPlayEnv(
         snapshot_dir=args.snapshot_dir,
