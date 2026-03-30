@@ -43,10 +43,11 @@ def make_env(seed: int):
 class ParallelCallback(BaseCallback):
     """Tracks episodes across parallel envs, saves snapshots, runs benchmarks."""
 
-    def __init__(self, log_every: int = 50, save_dir: str = "models"):
+    def __init__(self, log_every: int = 50, save_dir: str = "models", total_timesteps: int = 0):
         super().__init__(verbose=0)
         self.log_every = log_every
         self.save_dir = save_dir
+        self.total_timesteps = total_timesteps
         os.makedirs(save_dir, exist_ok=True)
 
         self.episode_count = 0
@@ -54,7 +55,7 @@ class ParallelCallback(BaseCallback):
         self.losses = 0
         self.episode_rewards = []
         self.episode_winners = []
-        self._ep_rewards = {}  # per-env running reward
+        self._ep_rewards = {}
         self._start_time = time.time()
         self.benchmark_history = []
         self._last_bench_wr = 0.0
@@ -122,13 +123,34 @@ class ParallelCallback(BaseCallback):
         bench_trend = "→".join(f"{w:.0f}" for _, w in self.benchmark_history[-6:])
         ts = datetime.now().strftime("%H:%M:%S")
 
+        # ETA
+        if sps > 0 and self.total_timesteps > 0:
+            remaining = self.total_timesteps - self.num_timesteps
+            eta_sec = remaining / sps
+            if eta_sec > 3600:
+                eta_str = f"{eta_sec/3600:.1f}h"
+            elif eta_sec > 60:
+                eta_str = f"{eta_sec/60:.0f}m"
+            else:
+                eta_str = f"{eta_sec:.0f}s"
+        else:
+            eta_str = "?"
+
+        # Elapsed
+        if elapsed > 3600:
+            elapsed_str = f"{elapsed/3600:.1f}h"
+        elif elapsed > 60:
+            elapsed_str = f"{elapsed/60:.0f}m"
+        else:
+            elapsed_str = f"{elapsed:.0f}s"
+
         print(
             f"[{ts}] "
             f"ep={self.episode_count:<5d} steps={self.num_timesteps:>9,} | "
             f"bench={self._last_bench_wr:3.0f}%[{bench_trend}] | "
             f"WR={recent_wr:4.1f}% cum={cum_wr:4.1f}% | "
             f"R={avg_r:+6.1f} | "
-            f"{sps:.0f} sps"
+            f"{sps:.0f} sps | {elapsed_str} / ETA {eta_str}"
         )
 
 
@@ -175,7 +197,7 @@ def main():
             ent_coef=0.02,
         )
 
-    callback = ParallelCallback(log_every=args.log_every)
+    callback = ParallelCallback(log_every=args.log_every, total_timesteps=args.timesteps)
 
     t0 = time.time()
     model.learn(total_timesteps=args.timesteps, callback=callback)

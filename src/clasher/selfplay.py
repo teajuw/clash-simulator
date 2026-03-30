@@ -486,6 +486,16 @@ def render_pool_status(
             h = sorted(played, key=lambda x: -x[3])[0]
             hard_str = f"{_short_name(h[0])}({h[1]}W/{h[2]}L)"
 
+    # Elapsed formatting
+    if elapsed > 3600:
+        elapsed_str = f"{elapsed/3600:.1f}h"
+    elif elapsed > 60:
+        elapsed_str = f"{elapsed/60:.0f}m"
+    else:
+        elapsed_str = f"{elapsed:.0f}s"
+
+    sps = steps / elapsed if elapsed > 0 else 0
+
     return (
         f"[{timestamp}] "
         f"ep={episode:<5d} steps={steps:>9,} | "
@@ -493,5 +503,6 @@ def render_pool_status(
         f"elo={agent_elo:5.0f} | "
         f"bench={bench_wr:3.0f}%[{bench_trend}] | "
         f"R={avg_reward:+6.1f} | "
+        f"{sps:.0f} sps {elapsed_str} | "
         f"vs=[{opp_str}] hard={hard_str}"
     )
