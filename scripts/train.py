@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 import numpy as np
 from stable_baselines3 import DQN, PPO
 from stable_baselines3.common.callbacks import BaseCallback
+from sb3_contrib import MaskablePPO
 
 # Suppress simulator debug prints during training
 import clasher.config as _cfg
@@ -89,7 +90,7 @@ class WinRateCallback(BaseCallback):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--algo", choices=["dqn", "ppo"], default="dqn")
+    parser.add_argument("--algo", choices=["dqn", "ppo", "maskable_ppo"], default="maskable_ppo")
     parser.add_argument("--timesteps", type=int, default=50_000)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--verbose", action="store_true", help="Show simulator debug prints")
@@ -120,8 +121,23 @@ def main():
             target_update_interval=500,
             learning_rate=1e-4,
         )
-    else:
+    elif args.algo == "ppo":
         model = PPO(
+            "MlpPolicy",
+            env,
+            verbose=0,
+            seed=args.seed,
+            n_steps=256,
+            batch_size=64,
+            n_epochs=4,
+            gamma=0.99,
+            gae_lambda=0.95,
+            learning_rate=3e-4,
+            clip_range=0.2,
+            ent_coef=0.01,
+        )
+    elif args.algo == "maskable_ppo":
+        model = MaskablePPO(
             "MlpPolicy",
             env,
             verbose=0,

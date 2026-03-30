@@ -187,12 +187,13 @@ class ClashRoyaleEnv(gym.Env):
         assert self.battle is not None, "Call reset() first"
 
         # 1. Decode and execute player action
+        deployed = False
         if action != 0:
             card_slot, tile_x, tile_y = decode_action(action)
             player = self.battle.players[0]
             if 0 <= card_slot < len(player.hand):
                 card_name = player.hand[card_slot]
-                self.battle.deploy_card(
+                deployed = self.battle.deploy_card(
                     0, card_name, Position(tile_x + 0.5, tile_y + 0.5),
                 )
 
@@ -217,7 +218,7 @@ class ClashRoyaleEnv(gym.Env):
                 self._deploy_grid = None
 
         # 4. Compute reward
-        reward = self._compute_reward()
+        reward = self._compute_reward(deployed=deployed)
 
         # 5. Build observation
         obs = self._get_obs()
@@ -231,9 +232,14 @@ class ClashRoyaleEnv(gym.Env):
             "winner": self.battle.winner,
             "my_crowns": self.battle.players[1].get_crown_count(),
             "opp_crowns": self.battle.players[0].get_crown_count(),
+            "action_mask": self.action_masks(),
         }
 
         return obs, reward, terminated, truncated, info
+
+    def action_masks(self) -> np.ndarray:
+        """MaskablePPO-compatible action mask. Shape (1081,)."""
+        return self.valid_action_mask()
 
     def valid_action_mask(self) -> np.ndarray:
         """Return boolean mask of valid actions. Shape (1081,)."""
@@ -365,8 +371,13 @@ class ClashRoyaleEnv(gym.Env):
 
         return obs
 
-    def _compute_reward(self) -> float:
-        """Dense reward from tower HP changes + crown bonuses + win bonus."""
+    def _compute_reward(self, deployed: bool = False) -> float:
+        """Dense reward from tower HP changes + crown bonuses + win bonus.
+
+        Reward shaping:
+        - Small bonus for deploying a card (encourages action over passivity)
+        - Penalty for leaking elixir at 10 (encourages spending)
+        """
         my_hp = self._total_tower_hp(0)
         opp_hp = self._total_tower_hp(1)
 
@@ -390,6 +401,10 @@ class ClashRoyaleEnv(gym.Env):
             elif self.battle.winner == 1:
                 win_bonus = -50.0
 
+        # Reward shaping
+        deploy_bonus = 0.01 if deployed else 0.0
+        leak_penalty = -0.02 if self.battle.players[0].elixir >= 9.8 else 0.0
+
         # Update previous state
         self._prev_my_tower_hp = my_hp
         self._prev_opp_tower_hp = opp_hp
@@ -401,6 +416,8 @@ class ClashRoyaleEnv(gym.Env):
             - damage_taken * 0.5
             + crown_delta * 10.0
             + win_bonus
+            + deploy_bonus
+            + leak_penalty
         )
 
     def _total_tower_hp(self, player_id: int) -> float:
