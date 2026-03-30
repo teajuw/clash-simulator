@@ -50,6 +50,13 @@ class SnapshotPool:
         # Track win/loss per opponent: {opponent_id: [wins, losses]}
         self.records: Dict[str, List[int]] = {self._rule_bot_id: [0, 0]}
 
+        # Load any existing snapshots from disk
+        for f in sorted(self.snapshot_dir.glob("snapshot_ep*.zip")):
+            path = str(f).replace(".zip", "")  # SB3 adds .zip
+            if path not in self.snapshots:
+                self.snapshots.append(path)
+                self.records[path] = [0, 0]
+
     def save_snapshot(self, model, episode: int) -> str:
         """Save a model checkpoint. Prunes oldest if pool is full."""
         path = str(self.snapshot_dir / f"snapshot_ep{episode:06d}")
@@ -150,14 +157,19 @@ class SnapshotOpponent:
         self._opponent_id: str = "__rule_bot__"
 
     def load(self, opponent_id: str) -> None:
-        """Load a snapshot as the current opponent."""
+        """Load a snapshot as the current opponent. Falls back to rule bot if missing."""
         from stable_baselines3 import PPO
 
         self._opponent_id = opponent_id
         if opponent_id == "__rule_bot__":
             self._model = None
         else:
-            self._model = PPO.load(opponent_id)
+            try:
+                self._model = PPO.load(opponent_id)
+            except (FileNotFoundError, ValueError):
+                # Snapshot file missing or corrupt — fall back to rule bot
+                self._model = None
+                self._opponent_id = "__rule_bot__"
 
     def act(self, battle: BattleState) -> None:
         """Take an action as player 1."""

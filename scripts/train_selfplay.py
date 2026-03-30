@@ -48,6 +48,7 @@ class SelfPlayCallback(BaseCallback):
         self.episode_winners = []
         self._current_reward = 0.0
         self._start_time = time.time()
+        self.benchmark_history: list = []  # [(episode, wr_vs_rule_bot)]
 
     def _on_step(self) -> bool:
         self._current_reward += self.locals.get("rewards", [0])[0]
@@ -70,13 +71,38 @@ class SelfPlayCallback(BaseCallback):
 
             # Save snapshot
             if self.episode_count % self.save_every == 0:
-                path = self.env.save_snapshot(self.model)
+                self.env.save_snapshot(self.model)
+
+            # Benchmark against rule bot every save_every episodes
+            if self.episode_count % self.save_every == 0:
+                self._benchmark()
 
             # Display progress
             if self.episode_count % self.log_every == 0:
                 self._display()
 
         return True
+
+    def _benchmark(self, n_games: int = 10):
+        """Run fixed benchmark: current model vs rule bot."""
+        from clasher.env import ClashRoyaleEnv
+        bench_env = ClashRoyaleEnv(opponent="rule_bot")
+        wins = 0
+        for _ in range(n_games):
+            obs, _ = bench_env.reset()
+            while True:
+                action, _ = self.model.predict(obs, deterministic=True)
+                obs, reward, terminated, truncated, info = bench_env.step(action)
+                if terminated:
+                    if info["winner"] == 0:
+                        wins += 1
+                    break
+        wr = wins / n_games * 100
+        self.benchmark_history.append((self.episode_count, wr))
+        # Show trend
+        history_str = " → ".join(f"{wr:.0f}%" for _, wr in self.benchmark_history[-5:])
+        print(f"  ⚡ BENCHMARK vs rule_bot: {wins}/{n_games} ({wr:.0f}%)  [{history_str}]")
+        print()
 
     def _display(self):
         total = self.wins + self.losses + self.draws
