@@ -28,6 +28,12 @@ from .battle import BattleState
 from .entities import Building, Troop
 from .tournament_standard import apply_tournament_overrides
 
+# Rust backend (optional)
+try:
+    from .rust_backend import RustBattle, RUST_AVAILABLE
+except ImportError:
+    RUST_AVAILABLE = False
+
 # ── Deck ──────────────────────────────────────────────────────────────────────
 
 DECK = [
@@ -94,7 +100,7 @@ N_UNITS = MAX_UNITS * UNIT_FEATURES
 OBS_SIZE = N_SCALARS + N_HAND + N_UNITS  # 171
 
 N_CARD_CHOICES = 5   # 0=WAIT, 1-4=hand slots
-TICKS_PER_STEP = 30
+TICKS_PER_STEP = 20  # 1 second of game time (20 ticks/sec real CR, 30 for Python legacy)
 
 MAX_KING_HP = 4824.0
 MAX_PRINCESS_HP = 3052.0
@@ -143,10 +149,21 @@ class ClashRoyaleEnv(gym.Env):
         opponent: str = "rule_bot",
         ticks_per_step: int = TICKS_PER_STEP,
         render_mode: Optional[str] = None,
+        backend: str = "auto",  # "auto", "rust", or "python"
     ):
         super().__init__()
         self.ticks_per_step = ticks_per_step
         self.render_mode = render_mode
+
+        # Backend selection
+        if backend == "auto":
+            self.use_rust = RUST_AVAILABLE
+        elif backend == "rust":
+            if not RUST_AVAILABLE:
+                raise ImportError("Rust backend not available")
+            self.use_rust = True
+        else:
+            self.use_rust = False
 
         if opponent == "rule_bot":
             self._opponent_fn: Callable = rule_bot_policy
@@ -180,22 +197,31 @@ class ClashRoyaleEnv(gym.Env):
     ) -> Tuple[np.ndarray, Dict[str, Any]]:
         super().reset(seed=seed)
 
-        self.battle = BattleState()
-        apply_tournament_overrides(self.battle)
-
-        for p in self.battle.players:
-            shuffled = list(DECK)
-            self.np_random.shuffle(shuffled)
-            p.deck = list(DECK)
-            p.hand = shuffled[:4]
-            p.cycle_queue = deque(shuffled[4:])
-            p.elixir = 5.0
+        if self.use_rust:
+            self.battle = RustBattle()
+            for pid in range(2):
+                shuffled = list(DECK)
+                self.np_random.shuffle(shuffled)
+                self.battle.set_deck(pid, shuffled[:4], shuffled[4:])
+        else:
+            self.battle = BattleState()
+            apply_tournament_overrides(self.battle)
+            for p in self.battle.players:
+                shuffled = list(DECK)
+                self.np_random.shuffle(shuffled)
+                p.deck = list(DECK)
+                p.hand = shuffled[:4]
+                p.cycle_queue = deque(shuffled[4:])
+                p.elixir = 5.0
 
         self._prev_my_tower_hp = self._total_tower_hp(0)
         self._prev_opp_tower_hp = self._total_tower_hp(1)
         self._prev_my_crowns = 0
         self._prev_opp_crowns = 0
-        self._prev_opp_entity_hp = self._total_entity_hp(self.battle, 1)
+        if not self.use_rust:
+            self._prev_opp_entity_hp = self._total_entity_hp(self.battle, 1)
+        else:
+            self._prev_opp_entity_hp = 0.0
 
         return self._get_obs(), {"battle_time": 0.0}
 
@@ -221,10 +247,14 @@ class ClashRoyaleEnv(gym.Env):
         self._opponent_fn(self.battle)
 
         # 3. Advance simulation
-        for _ in range(self.ticks_per_step):
-            self.battle.step(speed_factor=1.0)
-            if self.battle.game_over:
-                break
+        if self.use_rust:
+            # Rust: 20 ticks = 1 second of game time
+            self.battle.step_n(self.ticks_per_step)
+        else:
+            for _ in range(self.ticks_per_step):
+                self.battle.step(speed_factor=1.0)
+                if self.battle.game_over:
+                    break
 
         # 4. Reward
         reward = self._compute_reward(deployed)
@@ -289,6 +319,9 @@ class ClashRoyaleEnv(gym.Env):
 
     def _get_obs(self) -> np.ndarray:
         """Build flat observation vector of shape (171,)."""
+        if self.use_rust:
+            return self.battle.get_observation()
+
         obs = np.zeros(OBS_SIZE, dtype=np.float32)
         p0 = self.battle.players[0]
         p1 = self.battle.players[1]

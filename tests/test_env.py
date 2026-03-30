@@ -107,7 +107,7 @@ class TestRegions:
 class TestActionMasks:
 
     def test_masks_return_two_arrays(self):
-        env = ClashRoyaleEnv()
+        env = ClashRoyaleEnv(backend="python")
         env.reset(seed=1)
         card_mask, region_mask = env.action_masks()
         assert card_mask.shape == (N_CARD_CHOICES,)
@@ -115,7 +115,7 @@ class TestActionMasks:
         assert card_mask[0] is np.True_  # WAIT always valid
 
     def test_low_elixir_masks_expensive_cards(self):
-        env = ClashRoyaleEnv()
+        env = ClashRoyaleEnv(backend="python")
         env.reset(seed=1)
         env.battle.players[0].elixir = 0.5
         card_mask, _ = env.action_masks()
