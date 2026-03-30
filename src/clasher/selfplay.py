@@ -32,6 +32,15 @@ from .env import (
 )
 
 
+def _update_elo(rating_a: float, rating_b: float, a_won: bool, k: float = 32.0) -> Tuple[float, float]:
+    """Standard Elo update. Returns (new_a, new_b)."""
+    expected_a = 1.0 / (1.0 + 10.0 ** ((rating_b - rating_a) / 400.0))
+    score_a = 1.0 if a_won else 0.0
+    new_a = rating_a + k * (score_a - expected_a)
+    new_b = rating_b + k * ((1.0 - score_a) - (1.0 - expected_a))
+    return new_a, new_b
+
+
 class SnapshotPool:
     """Snapshot pool with Prioritized Fictitious Self-Play (PFSP) sampling.
 
@@ -49,6 +58,10 @@ class SnapshotPool:
         self.snapshots: List[str] = [self._rule_bot_id]
         # Track win/loss per opponent: {opponent_id: [wins, losses]}
         self.records: Dict[str, List[int]] = {self._rule_bot_id: [0, 0]}
+        # Elo ratings: {opponent_id: rating}
+        self.elo: Dict[str, float] = {self._rule_bot_id: 1000.0}
+        # Current agent's Elo (the model being trained)
+        self.agent_elo: float = 1000.0
 
         # Load any existing snapshots from disk
         for f in sorted(self.snapshot_dir.glob("snapshot_ep*.zip")):
@@ -56,6 +69,7 @@ class SnapshotPool:
             if path not in self.snapshots:
                 self.snapshots.append(path)
                 self.records[path] = [0, 0]
+                self.elo[path] = 1000.0
 
     def save_snapshot(self, model, episode: int) -> str:
         """Save a model checkpoint. Prunes oldest if pool is full."""
@@ -63,6 +77,7 @@ class SnapshotPool:
         model.save(path)
         self.snapshots.append(path)
         self.records[path] = [0, 0]
+        self.elo[path] = self.agent_elo  # freeze current skill as this snapshot's rating
 
         # Prune oldest (not rule bot, not latest 3) if over max
         while len(self.snapshots) > self.max_size:
@@ -78,13 +93,19 @@ class SnapshotPool:
         return path
 
     def record_result(self, opponent_id: str, won: bool) -> None:
-        """Record a win or loss against an opponent."""
+        """Record a win or loss and update Elo ratings."""
         if opponent_id not in self.records:
             self.records[opponent_id] = [0, 0]
         if won:
             self.records[opponent_id][0] += 1
         else:
             self.records[opponent_id][1] += 1
+
+        # Update agent Elo only — opponent ratings are frozen at save time
+        if opponent_id not in self.elo:
+            self.elo[opponent_id] = 1000.0
+        opp_elo = self.elo[opponent_id]
+        self.agent_elo, _ = _update_elo(self.agent_elo, opp_elo, won)
 
     def sample_opponent(self, **kwargs) -> str:
         """PFSP sampling: weight by how hard each opponent is.
@@ -360,6 +381,7 @@ def render_pool_status(
     avg_reward: float,
     elapsed: float,
     steps: int,
+    agent_elo: float = 1000.0,
     opponent_dist: Optional[Dict[str, int]] = None,
     pool_stats: Optional[List[Tuple[str, int, int, float]]] = None,
 ) -> str:
@@ -382,6 +404,7 @@ def render_pool_status(
         f"├────────────────────────────────────────────────────────┤",
         f"│  Last 20 WR: [{wr_bar}] {recent_wr:4.1f}%  │",
         f"│  Overall:    {wins}W / {losses}L ({win_rate:4.1f}%)   R={avg_reward:+.1f}  {elapsed:.0f}s │",
+        f"│  Elo: {agent_elo:.0f}  (rule_bot=1000)                            │",
     ]
 
     # Show opponent distribution for last 20 games

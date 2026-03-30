@@ -124,6 +124,7 @@ class SelfPlayCallback(BaseCallback):
             avg_reward=avg_r,
             elapsed=time.time() - self._start_time,
             steps=self.num_timesteps,
+            agent_elo=self.env.pool.agent_elo,
             opponent_dist=self.env.get_opponent_distribution(),
             pool_stats=self.env.pool.get_stats_summary(),
         )
