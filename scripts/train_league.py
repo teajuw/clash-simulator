@@ -44,8 +44,8 @@ def main():
     print(f"  Snapshot pool: {args.snapshot_dir}/")
     print(f"  Save every: {args.save_every} episodes")
     print()
-    print("  Agent 0: MAIN AGENT      — plays full pool, ent=0.02")
-    print("  Agent 1: MAIN EXPLOITER  — plays only vs Main, ent=0.08")
+    print("  Agent 0: MAIN AGENT      — plays full pool (PFSP), ent=0.025")
+    print("  Agent 1: MAIN EXPLOITER  — plays only vs Main, ent=0.10")
     print("  Agent 2: LEAGUE EXPLOITER — plays random pool, ent=0.05")
     print("=" * 65)
     print()
@@ -60,7 +60,7 @@ def main():
         {
             "name": "MAIN",
             "role": "main",
-            "ent_coef": 0.02,
+            "ent_coef": 0.025,
             "seed": 42,
             "log_prefix": "[MAIN]",
             "resume": args.resume,
@@ -68,7 +68,7 @@ def main():
         {
             "name": "EXPLOITER",
             "role": "main_exploiter",
-            "ent_coef": 0.08,
+            "ent_coef": 0.10,
             "seed": 123,
             "log_prefix": "[EXPL]",
             "resume": None,

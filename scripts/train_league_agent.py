@@ -28,36 +28,90 @@ from clasher.entities import Troop
 
 # ── Opponent Functions ────────────────────────────────────────────────────────
 
+class FilePFSP:
+    """File-based PFSP tracker for cross-process opponent weighting.
+
+    Writes win/loss records to a JSON file. Each process reads it
+    to compute sampling weights. No shared memory needed.
+    """
+
+    def __init__(self, snapshot_dir: str, decay: float = 0.95):
+        self._path = os.path.join(snapshot_dir, "_pfsp_records.json")
+        self._decay = decay
+        self._cache = {}  # {snapshot_path: ema_lose_rate}
+        self._games = {}  # {snapshot_path: n_games}
+
+    def record(self, snapshot_path: str, won: bool):
+        """Record a result and update EMA. Flushes to disk every 100 games."""
+        n = self._games.get(snapshot_path, 0)
+        lost = 0.0 if won else 1.0
+        if n < 3:
+            w = self._cache.get(snapshot_path, 0.5)
+            self._cache[snapshot_path] = (w * n + lost) / (n + 1)
+        else:
+            old = self._cache.get(snapshot_path, 0.5)
+            self._cache[snapshot_path] = self._decay * old + (1 - self._decay) * lost
+        self._games[snapshot_path] = n + 1
+        self._total_games = getattr(self, '_total_games', 0) + 1
+
+        # Flush every 100 games (not every game)
+        if self._total_games % 100 == 0:
+            self._flush()
+
+    def _flush(self):
+        """Write EMA state to disk (best effort)."""
+        try:
+            import json
+            with open(self._path, "w") as f:
+                json.dump({"ema": self._cache, "games": self._games}, f)
+        except Exception:
+            pass
+
+    def sample(self, snapshots: list) -> str:
+        """PFSP-weighted sample: harder opponents sampled more."""
+        if not snapshots:
+            return None
+
+        weights = []
+        for s in snapshots:
+            n = self._games.get(s, 0)
+            if n < 3:
+                weights.append(0.3)  # explore
+            else:
+                lr = self._cache.get(s, 0.5)
+                weights.append(max(0.05, lr ** 2))
+
+        # Cap at 30%
+        total = sum(weights)
+        probs = [w / total for w in weights]
+        for i in range(len(probs)):
+            if probs[i] > 0.30:
+                probs[i] = 0.30
+        total = sum(probs)
+        probs = [p / total for p in probs]
+
+        return _random.choices(snapshots, weights=probs, k=1)[0]
+
+
 def make_pool_opponent(snapshot_dir: str, role: str):
     """Create an opponent function based on the agent's role."""
 
-    def _load_random_snapshot():
-        """Load a random snapshot from the pool."""
-        zips = sorted(glob(os.path.join(snapshot_dir, "*.zip")))
-        if not zips:
-            return None
-        path = _random.choice(zips)
+    pfsp = FilePFSP(snapshot_dir) if role == "main" else None
+
+    def _load_snapshot(path: str):
         try:
-            model = PPO.load(path.replace(".zip", ""))
-            return model
+            return PPO.load(path.replace(".zip", ""))
         except Exception:
             return None
 
-    def _load_latest_main_snapshot():
-        """Load the latest main agent snapshot."""
-        zips = sorted(glob(os.path.join(snapshot_dir, "main_*.zip")))
-        if not zips:
-            # Fall back to any snapshot
-            return _load_random_snapshot()
-        path = zips[-1]
-        try:
-            model = PPO.load(path.replace(".zip", ""))
-            return model
-        except Exception:
-            return None
+    def _get_all_snapshots():
+        return sorted(glob(os.path.join(snapshot_dir, "*.zip")))
 
-    # Cache the opponent model — reload periodically
-    state = {"model": None, "loaded_at": 0, "reload_every": 50}
+    def _get_main_snapshots():
+        return sorted(glob(os.path.join(snapshot_dir, "main_*.zip")))
+
+    # Cache: opponent model + which snapshot it came from
+    state = {"model": None, "snapshot": None, "loaded_at": 0, "reload_every": 50}
 
     def opponent_fn(battle):
         """Act as player 1 using a loaded snapshot."""
@@ -65,10 +119,23 @@ def make_pool_opponent(snapshot_dir: str, role: str):
 
         # Reload opponent model periodically
         if state["model"] is None or state["loaded_at"] % state["reload_every"] == 0:
+            zips = _get_all_snapshots()
+            if not zips:
+                _simple_opponent(battle)
+                return
+
             if role == "main_exploiter":
-                state["model"] = _load_latest_main_snapshot()
-            else:  # main or league_exploiter
-                state["model"] = _load_random_snapshot()
+                main_zips = _get_main_snapshots()
+                path = main_zips[-1] if main_zips else zips[-1]
+            elif role == "main" and pfsp:
+                # PFSP weighted selection
+                path = pfsp.sample(zips)
+            else:
+                # League exploiter: uniform random
+                path = _random.choice(zips)
+
+            state["snapshot"] = path
+            state["model"] = _load_snapshot(path)
 
         model = state["model"]
         if model is None:
@@ -95,6 +162,10 @@ def make_pool_opponent(snapshot_dir: str, role: str):
                     battle.deploy_card(1, card_name, pos)
         except Exception:
             _simple_opponent(battle)
+
+    # Attach pfsp and state so callback can access them
+    opponent_fn._pfsp = pfsp
+    opponent_fn._state = state
 
     return opponent_fn
 
@@ -174,7 +245,8 @@ def _mirror_obs(battle):
 
 class LeagueCallback(BaseCallback):
     def __init__(self, role, log_prefix, log_every, save_every,
-                 snapshot_dir, ent_coef, reset_every=10000):
+                 snapshot_dir, ent_coef, pfsp=None, opponent_state=None,
+                 reset_every=10000):
         super().__init__(verbose=0)
         self.role = role
         self.log_prefix = log_prefix
@@ -183,6 +255,8 @@ class LeagueCallback(BaseCallback):
         self.snapshot_dir = snapshot_dir
         self.ent_coef = ent_coef
         self.reset_every = reset_every
+        self.pfsp = pfsp
+        self.opponent_state = opponent_state  # shared state dict from opponent_fn
 
         self.episode_count = 0
         self.wins = 0
@@ -208,6 +282,12 @@ class LeagueCallback(BaseCallback):
                 self.wins += 1
             elif winner == 1:
                 self.losses += 1
+
+            # PFSP: record result for main agent's opponent weighting
+            if self.pfsp and self.opponent_state:
+                snap = self.opponent_state.get("snapshot")
+                if snap:
+                    self.pfsp.record(snap, winner == 0)
 
             # Save snapshot with role prefix
             if self.episode_count % self.save_every == 0:
@@ -277,6 +357,10 @@ def main():
     # Create opponent function based on role
     opponent_fn = make_pool_opponent(args.snapshot_dir, args.role)
 
+    # Get PFSP tracker and state dict (attached to the function by make_pool_opponent)
+    pfsp_tracker = getattr(opponent_fn, '_pfsp', None)
+    opp_state = getattr(opponent_fn, '_state', None)
+
     # Create env with custom opponent
     env = ClashRoyaleEnv(opponent="none")
     env._opponent_fn = opponent_fn
@@ -316,6 +400,8 @@ def main():
         save_every=args.save_every,
         snapshot_dir=args.snapshot_dir,
         ent_coef=args.ent_coef,
+        pfsp=pfsp_tracker,
+        opponent_state=opp_state,
     )
 
     print(f"{args.log_prefix} Starting {args.role} (ent={args.ent_coef}, seed={args.seed})")
