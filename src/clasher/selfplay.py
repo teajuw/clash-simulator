@@ -33,35 +33,106 @@ from .env import (
 
 
 class SnapshotPool:
-    """Manages a pool of saved policy snapshots for self-play opponents."""
+    """Snapshot pool with Prioritized Fictitious Self-Play (PFSP) sampling.
 
-    def __init__(self, snapshot_dir: str = "snapshots"):
+    Opponents you lose to get sampled more often. Opponents you've mastered
+    fade out naturally. Rule bot is always in the pool as a baseline anchor.
+    Pool is capped at max_size — oldest non-rule-bot snapshots are dropped.
+    """
+
+    def __init__(self, snapshot_dir: str = "snapshots", max_size: int = 20):
         self.snapshot_dir = Path(snapshot_dir)
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
-        self.snapshots: List[str] = []  # paths to saved models
+        self.max_size = max_size
         self._rule_bot_id = "__rule_bot__"
-        self.snapshots.append(self._rule_bot_id)
+
+        self.snapshots: List[str] = [self._rule_bot_id]
+        # Track win/loss per opponent: {opponent_id: [wins, losses]}
+        self.records: Dict[str, List[int]] = {self._rule_bot_id: [0, 0]}
 
     def save_snapshot(self, model, episode: int) -> str:
-        """Save a model checkpoint to the pool."""
+        """Save a model checkpoint. Prunes oldest if pool is full."""
         path = str(self.snapshot_dir / f"snapshot_ep{episode:06d}")
         model.save(path)
         self.snapshots.append(path)
+        self.records[path] = [0, 0]
+
+        # Prune oldest (not rule bot, not latest 3) if over max
+        while len(self.snapshots) > self.max_size:
+            # Find oldest non-rule-bot that isn't in the newest 3
+            for i, s in enumerate(self.snapshots):
+                if s != self._rule_bot_id and i < len(self.snapshots) - 3:
+                    self.snapshots.pop(i)
+                    self.records.pop(s, None)
+                    break
+            else:
+                break
+
         return path
 
-    def sample_opponent(self, latest_pct: float = 0.3) -> str:
-        """Sample an opponent from the pool.
+    def record_result(self, opponent_id: str, won: bool) -> None:
+        """Record a win or loss against an opponent."""
+        if opponent_id not in self.records:
+            self.records[opponent_id] = [0, 0]
+        if won:
+            self.records[opponent_id][0] += 1
+        else:
+            self.records[opponent_id][1] += 1
 
-        Args:
-            latest_pct: probability of picking the latest snapshot
+    def sample_opponent(self, **kwargs) -> str:
+        """PFSP sampling: weight by how hard each opponent is.
+
+        weight = (1 - win_rate)^2  →  harder opponents sampled more.
+        New opponents with no games get max weight (explore them first).
         """
         if len(self.snapshots) <= 1:
-            return self.snapshots[0]  # only rule bot
+            return self.snapshots[0]
 
-        if _random.random() < latest_pct and len(self.snapshots) > 1:
-            return self.snapshots[-1]  # latest
-        else:
-            return _random.choice(self.snapshots)  # random from pool
+        weights = []
+        for s in self.snapshots:
+            w, l = self.records.get(s, [0, 0])
+            total = w + l
+            if total < 3:
+                # Not enough data — give high weight to explore
+                weight = 1.0
+            else:
+                lose_rate = l / total
+                weight = max(0.05, lose_rate ** 2)  # min 5% so no opponent is fully ignored
+            weights.append(weight)
+
+        # Normalize
+        total_w = sum(weights)
+        probs = [w / total_w for w in weights]
+
+        return _random.choices(self.snapshots, weights=probs, k=1)[0]
+
+    def get_win_rate(self, opponent_id: str) -> Optional[float]:
+        """Get win rate against a specific opponent."""
+        w, l = self.records.get(opponent_id, [0, 0])
+        total = w + l
+        return w / total if total > 0 else None
+
+    def get_stats_summary(self) -> List[Tuple[str, int, int, float]]:
+        """Return (name, wins, losses, weight) for each snapshot."""
+        stats = []
+        weights = []
+        for s in self.snapshots:
+            w, l = self.records.get(s, [0, 0])
+            total = w + l
+            if total < 3:
+                weight = 1.0
+            else:
+                lose_rate = l / total
+                weight = max(0.05, lose_rate ** 2)
+            weights.append(weight)
+
+        total_w = sum(weights) or 1.0
+        for i, s in enumerate(self.snapshots):
+            w, l = self.records.get(s, [0, 0])
+            name = "rule_bot" if s == self._rule_bot_id else Path(s).stem
+            prob = weights[i] / total_w * 100
+            stats.append((name, w, l, prob))
+        return stats
 
     @property
     def size(self) -> int:
@@ -208,44 +279,57 @@ def _mirror_position(pos) -> "Position":
 # ── Self-Play Environment ────────────────────────────────────────────────────
 
 class SelfPlayEnv(ClashRoyaleEnv):
-    """ClashRoyaleEnv with self-play opponent from snapshot pool."""
+    """ClashRoyaleEnv with PFSP self-play opponent from snapshot pool."""
 
     def __init__(
         self,
         snapshot_dir: str = "snapshots",
         save_every: int = 50,
-        latest_pct: float = 0.3,
+        max_pool: int = 20,
         **kwargs,
     ):
         super().__init__(opponent="none", **kwargs)
-        self.pool = SnapshotPool(snapshot_dir)
+        self.pool = SnapshotPool(snapshot_dir, max_size=max_pool)
         self.opponent = SnapshotOpponent()
         self.save_every = save_every
-        self.latest_pct = latest_pct
         self._episode_count = 0
-        self._model_ref = None  # set externally before training
+        self._current_opponent_id: str = "__rule_bot__"
 
         # Override opponent function
         self._opponent_fn = self.opponent.act
 
-        # Stats for display
+        # Track opponent distribution for display
         self.opponent_name = "rule_bot"
-        self.wins_vs: Dict[str, List[bool]] = {}
+        self._recent_opponents: List[str] = []
 
     def reset(self, **kwargs):
+        # Record result of previous episode (if there was one)
+        if self._episode_count > 0 and self.battle is not None:
+            won = self.battle.winner == 0
+            self.pool.record_result(self._current_opponent_id, won)
+
         self._episode_count += 1
 
-        # Sample new opponent each episode
-        opp_id = self.pool.sample_opponent(self.latest_pct)
-        self.opponent.load(opp_id)
+        # Sample new opponent (PFSP weighted)
+        self._current_opponent_id = self.pool.sample_opponent()
+        self.opponent.load(self._current_opponent_id)
         self.opponent_name = self.opponent.name
+        self._recent_opponents.append(self.opponent_name)
+        if len(self._recent_opponents) > 20:
+            self._recent_opponents.pop(0)
 
         return super().reset(**kwargs)
 
     def save_snapshot(self, model) -> str:
         """Save current model to snapshot pool."""
-        path = self.pool.save_snapshot(model, self._episode_count)
-        return path
+        return self.pool.save_snapshot(model, self._episode_count)
+
+    def get_opponent_distribution(self) -> Dict[str, int]:
+        """How many of the last 20 games were against each opponent."""
+        dist: Dict[str, int] = {}
+        for name in self._recent_opponents:
+            dist[name] = dist.get(name, 0) + 1
+        return dist
 
     @property
     def episode_count(self) -> int:
@@ -257,7 +341,6 @@ class SelfPlayEnv(ClashRoyaleEnv):
 def render_pool_status(
     episode: int,
     pool_size: int,
-    opponent_name: str,
     win_rate: float,
     recent_wr: float,
     wins: int,
@@ -265,36 +348,41 @@ def render_pool_status(
     avg_reward: float,
     elapsed: float,
     steps: int,
+    opponent_dist: Optional[Dict[str, int]] = None,
+    pool_stats: Optional[List[Tuple[str, int, int, float]]] = None,
 ) -> str:
     """Render a clean terminal status display for self-play training."""
 
     bar_width = 30
-    wr_filled = int(recent_wr / 100 * bar_width)
+    wr_filled = int(min(recent_wr, 100) / 100 * bar_width)
     wr_bar = "█" * wr_filled + "░" * (bar_width - wr_filled)
 
-    # Determine phase
     if pool_size <= 1:
         phase = "RULE BOT"
-        phase_color = "📋"
     elif pool_size <= 5:
         phase = "EARLY SELF-PLAY"
-        phase_color = "🔄"
     else:
         phase = "SELF-PLAY"
-        phase_color = "⚔️"
 
     lines = [
-        f"┌─────────────────────────────────────────────────────┐",
-        f"│ {phase_color} {phase:<20s}  Pool: {pool_size:3d} snapshots          │",
-        f"├─────────────────────────────────────────────────────┤",
-        f"│  Episode: {episode:<6d}  Steps: {steps:>9,}  Time: {elapsed:>5.0f}s  │",
-        f"│  vs: {opponent_name:<20s}                          │",
-        f"│                                                     │",
-        f"│  Win Rate (last 20): {recent_wr:5.1f}%                       │",
-        f"│  [{wr_bar}]                │" if recent_wr <= 100 else "",
-        f"│                                                     │",
-        f"│  Cumulative: {wins}W / {losses}L  ({win_rate:4.1f}%)                  │",
-        f"│  Avg Reward: {avg_reward:+7.2f}                              │",
-        f"└─────────────────────────────────────────────────────┘",
+        f"┌────────────────────────────────────────────────────────┐",
+        f"│  {phase:<18s}  Pool: {pool_size:2d}  Ep: {episode:<5d}  {steps:>8,} steps │",
+        f"├────────────────────────────────────────────────────────┤",
+        f"│  Last 20 WR: [{wr_bar}] {recent_wr:4.1f}%  │",
+        f"│  Overall:    {wins}W / {losses}L ({win_rate:4.1f}%)   R={avg_reward:+.1f}  {elapsed:.0f}s │",
     ]
-    return "\n".join(l for l in lines if l)
+
+    # Show opponent distribution for last 20 games
+    if opponent_dist:
+        dist_str = "  ".join(f"{n}:{c}" for n, c in sorted(opponent_dist.items(), key=lambda x: -x[1])[:4])
+        lines.append(f"│  Opponents:  {dist_str:<42s}│")
+
+    # Show top 3 hardest opponents (highest PFSP weight)
+    if pool_stats and len(pool_stats) > 1:
+        # Sort by PFSP probability (hardest first)
+        hardest = sorted(pool_stats, key=lambda x: -x[3])[:3]
+        hard_str = "  ".join(f"{n[:12]}({w}W/{l}L {p:.0f}%)" for n, w, l, p in hardest)
+        lines.append(f"│  Hardest:    {hard_str:<42s}│")
+
+    lines.append(f"└────────────────────────────────────────────────────────┘")
+    return "\n".join(lines)

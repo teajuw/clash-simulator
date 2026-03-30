@@ -91,7 +91,6 @@ class SelfPlayCallback(BaseCallback):
         output = render_pool_status(
             episode=self.episode_count,
             pool_size=self.env.pool.size,
-            opponent_name=self.env.opponent_name,
             win_rate=cum_wr,
             recent_wr=recent_wr,
             wins=self.wins,
@@ -99,6 +98,8 @@ class SelfPlayCallback(BaseCallback):
             avg_reward=avg_r,
             elapsed=time.time() - self._start_time,
             steps=self.num_timesteps,
+            opponent_dist=self.env.get_opponent_distribution(),
+            pool_stats=self.env.pool.get_stats_summary(),
         )
         print(output)
         print()
