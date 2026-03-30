@@ -13,8 +13,10 @@ import random
 import time
 from collections import deque
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-os.chdir(os.path.join(os.path.dirname(__file__), ".."))  # for gamedata.json + hitboxes.json
+REPO_ROOT = os.path.join(os.path.dirname(__file__), "..")
+sys.path.insert(0, os.path.join(REPO_ROOT, "src"))
+sys.path.insert(0, REPO_ROOT)  # for visualize_battle.py
+os.chdir(REPO_ROOT)  # for gamedata.json + hitboxes.json
 
 import numpy as np
 
