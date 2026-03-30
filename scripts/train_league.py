@@ -137,6 +137,8 @@ def main():
         sel.register(proc.stdout, selectors.EVENT_READ, data=i)
 
     agent_names = ["MAIN", "EXPL", "LEAG"]
+    last_ep_group = [0, 0, 0]  # track which epoch group each agent last printed
+    lines_in_group = 0
 
     try:
         active = len(processes)
@@ -150,8 +152,23 @@ def main():
                     # Write to individual log file
                     log_files[idx].write(line + "\n")
                     log_files[idx].flush()
+
+                    # Detect epoch from line (ep=XXX)
+                    import re
+                    ep_match = re.search(r'ep=(\d+)', line)
+                    if ep_match:
+                        ep = int(ep_match.group(1))
+                        if ep > last_ep_group[idx]:
+                            last_ep_group[idx] = ep
+                            lines_in_group += 1
+                            # Add blank line after all 3 agents report same epoch
+                            if lines_in_group >= 3:
+                                lines_in_group = 0
+
                     # Print to terminal
                     print(f"{line}")
+                    if lines_in_group == 0 and ep_match:
+                        print()  # blank line between groups
                 else:
                     sel.unregister(key.fileobj)
                     active -= 1
