@@ -30,8 +30,8 @@ def main():
     parser.add_argument("--resume", type=str, default=None,
                         help="Resume main agent from this model")
     parser.add_argument("--snapshot-dir", type=str, default="snapshots")
-    parser.add_argument("--save-every", type=int, default=2000)
-    parser.add_argument("--log-every", type=int, default=200)
+    parser.add_argument("--save-every", type=int, default=500)
+    parser.add_argument("--log-every", type=int, default=100)
     args = parser.parse_args()
 
     # Ensure snapshot dir exists
