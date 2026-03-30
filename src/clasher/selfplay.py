@@ -1,0 +1,300 @@
+"""Self-play with snapshot pool for Clash Royale RL training.
+
+Architecture:
+  - Save agent checkpoints every N episodes
+  - Opponent sampled from pool: 70% random past snapshot, 30% latest
+  - Rule bot stays in pool permanently as baseline
+  - Observation is mirrored for opponent (swap player 0/1, flip y)
+
+Usage:
+    from clasher.selfplay import SelfPlayEnv
+
+    env = SelfPlayEnv(snapshot_dir="snapshots")
+    model = PPO("MlpPolicy", env)
+    model.learn(total_timesteps=500_000, callback=env.get_callback())
+"""
+
+from __future__ import annotations
+
+import os
+import random as _random
+from collections import deque
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+
+from .battle import BattleState
+from .entities import Building, Troop
+from .env import (
+    ClashRoyaleEnv, DECK, ELIXIR_COST, CARD_TO_IDX,
+    N_REGIONS, OBS_SIZE, region_to_position, rule_bot_policy,
+)
+
+
+class SnapshotPool:
+    """Manages a pool of saved policy snapshots for self-play opponents."""
+
+    def __init__(self, snapshot_dir: str = "snapshots"):
+        self.snapshot_dir = Path(snapshot_dir)
+        self.snapshot_dir.mkdir(parents=True, exist_ok=True)
+        self.snapshots: List[str] = []  # paths to saved models
+        self._rule_bot_id = "__rule_bot__"
+        self.snapshots.append(self._rule_bot_id)
+
+    def save_snapshot(self, model, episode: int) -> str:
+        """Save a model checkpoint to the pool."""
+        path = str(self.snapshot_dir / f"snapshot_ep{episode:06d}")
+        model.save(path)
+        self.snapshots.append(path)
+        return path
+
+    def sample_opponent(self, latest_pct: float = 0.3) -> str:
+        """Sample an opponent from the pool.
+
+        Args:
+            latest_pct: probability of picking the latest snapshot
+        """
+        if len(self.snapshots) <= 1:
+            return self.snapshots[0]  # only rule bot
+
+        if _random.random() < latest_pct and len(self.snapshots) > 1:
+            return self.snapshots[-1]  # latest
+        else:
+            return _random.choice(self.snapshots)  # random from pool
+
+    @property
+    def size(self) -> int:
+        return len(self.snapshots)
+
+    def is_rule_bot(self, opponent_id: str) -> bool:
+        return opponent_id == self._rule_bot_id
+
+
+class SnapshotOpponent:
+    """Plays as opponent using a loaded model snapshot."""
+
+    def __init__(self):
+        self._model = None
+        self._opponent_id: str = "__rule_bot__"
+
+    def load(self, opponent_id: str) -> None:
+        """Load a snapshot as the current opponent."""
+        from stable_baselines3 import PPO
+
+        self._opponent_id = opponent_id
+        if opponent_id == "__rule_bot__":
+            self._model = None
+        else:
+            self._model = PPO.load(opponent_id)
+
+    def act(self, battle: BattleState) -> None:
+        """Take an action as player 1."""
+        if self._model is None:
+            rule_bot_policy(battle)
+            return
+
+        # Build mirrored observation (opponent sees itself as player 0)
+        obs = self._mirror_obs(battle)
+
+        # Get action from model
+        action, _ = self._model.predict(obs, deterministic=False)
+        card_choice = int(action[0])
+        region = int(action[1])
+
+        if card_choice == 0:
+            return  # WAIT
+
+        slot = card_choice - 1
+        player = battle.players[1]
+
+        if slot >= len(player.hand):
+            return
+
+        card_name = player.hand[slot]
+        cost = ELIXIR_COST.get(card_name, 10)
+        if player.elixir < cost:
+            return
+
+        # Mirror the region: flip y for player 1
+        # Player 0's y=12-14 (bridge) → Player 1's y=17-19 (their bridge)
+        pos = region_to_position(region)
+        mirrored_pos = _mirror_position(pos)
+        battle.deploy_card(1, card_name, mirrored_pos)
+
+    def _mirror_obs(self, battle: BattleState) -> np.ndarray:
+        """Build observation from player 1's perspective (as if they're player 0)."""
+        obs = np.zeros(OBS_SIZE, dtype=np.float32)
+        # Swap players: p1 sees itself as p0
+        p0 = battle.players[1]  # opponent is "self" from their view
+        p1 = battle.players[0]  # we are "opponent" from their view
+
+        from .env import MAX_KING_HP, MAX_PRINCESS_HP, MAX_GAME_TIME, N_SCALARS, N_HAND
+        from .env import NUM_CARD_IDS, PRINCESS_TOWER_ID, KING_TOWER_ID, MAX_UNITS, UNIT_FEATURES
+
+        obs[0] = p0.elixir / 10.0
+        obs[1] = p1.elixir / 10.0
+        obs[2] = p0.king_tower_hp / MAX_KING_HP
+        obs[3] = p0.left_tower_hp / MAX_PRINCESS_HP
+        obs[4] = p0.right_tower_hp / MAX_PRINCESS_HP
+        obs[5] = p1.king_tower_hp / MAX_KING_HP
+        obs[6] = p1.left_tower_hp / MAX_PRINCESS_HP
+        obs[7] = p1.right_tower_hp / MAX_PRINCESS_HP
+        obs[8] = min(battle.time / MAX_GAME_TIME, 1.0)
+        obs[9] = float(battle.double_elixir)
+        obs[10] = float(battle.triple_elixir)
+        obs[11] = float(battle.overtime)
+
+        offset = N_SCALARS
+        for i in range(min(4, len(p0.hand))):
+            card = p0.hand[i]
+            obs[offset + i] = CARD_TO_IDX.get(card, 0) / (NUM_CARD_IDS - 1)
+        if p0.cycle_queue:
+            obs[offset + 4] = CARD_TO_IDX.get(p0.cycle_queue[0], 0) / (NUM_CARD_IDS - 1)
+        for i in range(min(4, len(p0.hand))):
+            card = p0.hand[i]
+            cost = ELIXIR_COST.get(card, 10)
+            obs[offset + 5 + i] = 1.0 if p0.elixir >= cost else 0.0
+
+        offset = N_SCALARS + N_HAND
+        unit_idx = 0
+        for entity in battle.entities.values():
+            if unit_idx >= MAX_UNITS:
+                break
+            if not entity.is_alive:
+                continue
+            if not isinstance(entity, (Troop, Building)):
+                continue
+
+            if isinstance(entity, Building) and entity.position.y in (2.5, 29.5):
+                card_id = KING_TOWER_ID
+            elif isinstance(entity, Building) and entity.position.y in (6.5, 25.5):
+                card_id = PRINCESS_TOWER_ID
+            elif entity.card_stats:
+                card_id = CARD_TO_IDX.get(entity.card_stats.name, 0)
+            else:
+                card_id = 0
+
+            # Flip y and swap owner for mirrored perspective
+            mirrored_y = 32.0 - entity.position.y
+            owner = 1.0 if entity.player_id == 1 else 0.0  # swap: p1 is "self"
+
+            base = offset + unit_idx * UNIT_FEATURES
+            obs[base + 0] = card_id / (NUM_CARD_IDS - 1)
+            obs[base + 1] = np.clip(entity.position.x / 18.0, 0.0, 1.0)
+            obs[base + 2] = np.clip(mirrored_y / 32.0, 0.0, 1.0)
+            obs[base + 3] = (
+                entity.hitpoints / entity.max_hitpoints
+                if entity.max_hitpoints > 0 else 0.0
+            )
+            obs[base + 4] = owner
+            unit_idx += 1
+
+        return obs
+
+    @property
+    def name(self) -> str:
+        if self._opponent_id == "__rule_bot__":
+            return "rule_bot"
+        return Path(self._opponent_id).stem
+
+
+def _mirror_position(pos) -> "Position":
+    """Mirror a position for player 1 (flip y across center)."""
+    from .arena import Position
+    return Position(pos.x, 32.0 - pos.y)
+
+
+# ── Self-Play Environment ────────────────────────────────────────────────────
+
+class SelfPlayEnv(ClashRoyaleEnv):
+    """ClashRoyaleEnv with self-play opponent from snapshot pool."""
+
+    def __init__(
+        self,
+        snapshot_dir: str = "snapshots",
+        save_every: int = 50,
+        latest_pct: float = 0.3,
+        **kwargs,
+    ):
+        super().__init__(opponent="none", **kwargs)
+        self.pool = SnapshotPool(snapshot_dir)
+        self.opponent = SnapshotOpponent()
+        self.save_every = save_every
+        self.latest_pct = latest_pct
+        self._episode_count = 0
+        self._model_ref = None  # set externally before training
+
+        # Override opponent function
+        self._opponent_fn = self.opponent.act
+
+        # Stats for display
+        self.opponent_name = "rule_bot"
+        self.wins_vs: Dict[str, List[bool]] = {}
+
+    def reset(self, **kwargs):
+        self._episode_count += 1
+
+        # Sample new opponent each episode
+        opp_id = self.pool.sample_opponent(self.latest_pct)
+        self.opponent.load(opp_id)
+        self.opponent_name = self.opponent.name
+
+        return super().reset(**kwargs)
+
+    def save_snapshot(self, model) -> str:
+        """Save current model to snapshot pool."""
+        path = self.pool.save_snapshot(model, self._episode_count)
+        return path
+
+    @property
+    def episode_count(self) -> int:
+        return self._episode_count
+
+
+# ── Visual Display ────────────────────────────────────────────────────────────
+
+def render_pool_status(
+    episode: int,
+    pool_size: int,
+    opponent_name: str,
+    win_rate: float,
+    recent_wr: float,
+    wins: int,
+    losses: int,
+    avg_reward: float,
+    elapsed: float,
+    steps: int,
+) -> str:
+    """Render a clean terminal status display for self-play training."""
+
+    bar_width = 30
+    wr_filled = int(recent_wr / 100 * bar_width)
+    wr_bar = "█" * wr_filled + "░" * (bar_width - wr_filled)
+
+    # Determine phase
+    if pool_size <= 1:
+        phase = "RULE BOT"
+        phase_color = "📋"
+    elif pool_size <= 5:
+        phase = "EARLY SELF-PLAY"
+        phase_color = "🔄"
+    else:
+        phase = "SELF-PLAY"
+        phase_color = "⚔️"
+
+    lines = [
+        f"┌─────────────────────────────────────────────────────┐",
+        f"│ {phase_color} {phase:<20s}  Pool: {pool_size:3d} snapshots          │",
+        f"├─────────────────────────────────────────────────────┤",
+        f"│  Episode: {episode:<6d}  Steps: {steps:>9,}  Time: {elapsed:>5.0f}s  │",
+        f"│  vs: {opponent_name:<20s}                          │",
+        f"│                                                     │",
+        f"│  Win Rate (last 20): {recent_wr:5.1f}%                       │",
+        f"│  [{wr_bar}]                │" if recent_wr <= 100 else "",
+        f"│                                                     │",
+        f"│  Cumulative: {wins}W / {losses}L  ({win_rate:4.1f}%)                  │",
+        f"│  Avg Reward: {avg_reward:+7.2f}                              │",
+        f"└─────────────────────────────────────────────────────┘",
+    ]
+    return "\n".join(l for l in lines if l)
