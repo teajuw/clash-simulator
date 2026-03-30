@@ -128,10 +128,9 @@ def main():
         print(f"  Started {agent['name']} (PID {proc.pid}) → {log_path}")
 
     print()
-    print("  All 3 agents running. Logs:")
-    print("    tail -f training_main.log")
-    print("    tail -f training_main_exploiter.log")
-    print("    tail -f training_league_exploiter.log")
+    print(f"  All {len(agents)} agents running. Logs:")
+    for agent in agents:
+        print(f"    tail -f training_{agent['role']}.log")
     print()
     print("  Combined view:")
     print("    tail -f training_*.log")
