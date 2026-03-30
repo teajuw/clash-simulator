@@ -265,6 +265,7 @@ class LeagueCallback(BaseCallback):
         self.episode_winners = []
         self._current_reward = 0.0
         self._start_time = time.time()
+        self._post_reset_lr_steps = 0  # LR warmup counter after exploiter reset
 
     def _on_step(self) -> bool:
         self._current_reward += self.locals.get("rewards", [0])[0]
@@ -274,6 +275,14 @@ class LeagueCallback(BaseCallback):
             self.episode_count += 1
             self.episode_rewards.append(self._current_reward)
             self._current_reward = 0.0
+
+            # Post-reset LR decay: 1e-3 → 3e-4 over 500 episodes
+            if self._post_reset_lr_steps > 0:
+                self._post_reset_lr_steps -= 1
+                progress = self._post_reset_lr_steps / 500.0  # 1.0 → 0.0
+                lr = 3e-4 + (1e-3 - 3e-4) * progress  # 1e-3 → 3e-4
+                for pg in self.model.policy.optimizer.param_groups:
+                    pg['lr'] = lr
 
             infos = self.locals.get("infos", [{}])
             winner = infos[0].get("winner", None)
@@ -304,11 +313,13 @@ class LeagueCallback(BaseCallback):
                     try:
                         latest_main = main_zips[-1].replace(".zip", "")
                         main_model = PPO.load(latest_main)
-                        # Copy main's weights into exploiter
+                        # Copy main's weights
                         self.model.policy.load_state_dict(main_model.policy.state_dict())
+                        # Bump LR: fast adaptation right after reset
+                        self._post_reset_lr_steps = 500  # decay back over 500 episodes
                         print(f"{self.log_prefix} Reset to {Path(latest_main).stem}")
                     except Exception:
-                        pass  # if load fails, just keep current weights
+                        pass
 
             # Display
             if self.episode_count % self.log_every == 0:

@@ -382,14 +382,17 @@ class ClashRoyaleEnvV2(gym.Env):
         self._prev_my_crowns = my_crowns
         self._prev_opp_crowns = opp_crowns
 
+        r_crowns = crowns_scored * 20.0 - crowns_lost * 30.0
+        base_reward = dmg_dealt - dmg_taken + r_crowns + r_win + r_leak
+
         if self.adversarial:
-            # Flip: reward damage TO opponent's towers, penalize own tower loss less
-            # The exploiter WANTS to destroy, doesn't care as much about defense
-            r_crowns = crowns_scored * 30.0 - crowns_lost * 10.0  # inverted weights
-            return dmg_dealt * 1.0 - dmg_taken * 0.5 + r_crowns + r_win + r_leak
+            # Same reward structure as main, but with a win bonus multiplier.
+            # The exploit comes from high entropy + playing only vs main,
+            # not from a different reward. The 2x win bonus makes the
+            # exploiter care MORE about winning against this specific opponent.
+            return base_reward + (r_win * 1.0)  # extra +50/-50 on top (total ±100)
         else:
-            r_crowns = crowns_scored * 20.0 - crowns_lost * 30.0
-            return dmg_dealt - dmg_taken + r_crowns + r_win + r_leak
+            return base_reward
 
     def _total_tower_hp(self, player_id: int) -> float:
         p = self.battle.players[player_id]
