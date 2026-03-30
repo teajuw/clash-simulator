@@ -232,14 +232,20 @@ class ClashRoyaleEnv(gym.Env):
             "winner": self.battle.winner,
             "my_crowns": self.battle.players[1].get_crown_count(),
             "opp_crowns": self.battle.players[0].get_crown_count(),
-            "action_mask": self.action_masks(),
         }
 
         return obs, reward, terminated, truncated, info
 
     def action_masks(self) -> np.ndarray:
-        """MaskablePPO-compatible action mask. Shape (1081,)."""
-        return self.valid_action_mask()
+        """MaskablePPO-compatible action mask. Shape (1081,).
+
+        Guarantees at least one action is always valid (WAIT).
+        """
+        mask = self.valid_action_mask()
+        # Safety: ensure mask is never all-False (would crash MaskablePPO)
+        if not mask.any():
+            mask[0] = True
+        return mask
 
     def valid_action_mask(self) -> np.ndarray:
         """Return boolean mask of valid actions. Shape (1081,)."""
