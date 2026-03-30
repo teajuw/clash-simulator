@@ -77,22 +77,20 @@ class CardTracker:
     def get_own_observation(self) -> np.ndarray:
         """Own hand knowledge — 8 floats.
 
-        Each value = how close the card is to being in hand:
-          1.0 = in hand (positions 0-3)
-          0.75 = next card (position 4)
-          0.5 = 6th card
-          0.25 = 7th card
-          0.0 = 8th card (furthest from hand)
+        Simple linear encoding of cycle position:
+          pos 0-3 (in hand):  1.0
+          pos 4 (next card):  0.75
+          pos 5:              0.50
+          pos 6:              0.25
+          pos 7 (furthest):   0.00
         """
         obs = np.zeros(DECK_SIZE, dtype=np.float32)
         for pos, card_idx in enumerate(self._own_cycle):
             if pos < 4:
-                obs[card_idx] = 1.0  # in hand
-            elif pos == 4:
-                obs[card_idx] = 0.75  # next card (known in real CR)
+                obs[card_idx] = 1.0
             else:
-                # Positions 5, 6, 7 — deducible from deck knowledge
-                obs[card_idx] = max(0.0, 1.0 - pos * 0.125)
+                # pos 4→0.75, pos 5→0.50, pos 6→0.25, pos 7→0.00
+                obs[card_idx] = 1.0 - (pos - 3) * 0.25
         return obs
 
     def get_opponent_observation(self) -> np.ndarray:
