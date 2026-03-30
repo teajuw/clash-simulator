@@ -161,6 +161,11 @@ def behavioral_cloning(observations, actions, env, epochs=10, lr=1e-3, batch_siz
         accuracy = correct / total * 100
         print(f"  Epoch {epoch+1:2d}/{epochs}: loss={avg_loss:.4f}  accuracy={accuracy:.1f}%")
 
+    # Clamp policy weights to prevent extreme logits that break MaskablePPO
+    with torch.no_grad():
+        for param in policy.action_net.parameters():
+            param.clamp_(-5.0, 5.0)
+
     return model
 
 
