@@ -409,15 +409,26 @@ def render_pool_status(
 
     # Show opponent distribution for last 20 games
     if opponent_dist:
-        dist_str = "  ".join(f"{n}:{c}" for n, c in sorted(opponent_dist.items(), key=lambda x: -x[1])[:4])
+        def _short(n):
+            if n == "rule_bot":
+                return "bot"
+            return n.replace("snapshot_ep", "ep").lstrip("0") or "ep0"
+        dist_str = "  ".join(f"{_short(n)}:{c}" for n, c in sorted(opponent_dist.items(), key=lambda x: -x[1])[:5])
         lines.append(f"│  Opponents:  {dist_str:<42s}│")
 
-    # Show top 3 hardest opponents (highest PFSP weight)
+    # Show top 3 hardest opponents (highest PFSP weight, with games played)
     if pool_stats and len(pool_stats) > 1:
-        # Sort by PFSP probability (hardest first)
-        hardest = sorted(pool_stats, key=lambda x: -x[3])[:3]
-        hard_str = "  ".join(f"{n[:12]}({w}W/{l}L {p:.0f}%)" for n, w, l, p in hardest)
-        lines.append(f"│  Hardest:    {hard_str:<42s}│")
+        # Filter to opponents with at least 1 game, then sort by PFSP weight
+        played = [(n, w, l, p) for n, w, l, p in pool_stats if w + l > 0]
+        if played:
+            hardest = sorted(played, key=lambda x: -x[3])[:3]
+            # Shorten names: "snapshot_ep000201" → "ep200"
+            def short_name(n):
+                if n == "rule_bot":
+                    return "bot"
+                return n.replace("snapshot_ep", "ep").lstrip("0") or "ep0"
+            hard_str = "  ".join(f"{short_name(n)}({w}W/{l}L {p:.0f}%)" for n, w, l, p in hardest)
+            lines.append(f"│  Hardest:    {hard_str:<42s}│")
 
     lines.append(f"└────────────────────────────────────────────────────────┘")
     return "\n".join(lines)
