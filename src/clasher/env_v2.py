@@ -338,30 +338,29 @@ class ClashRoyaleEnvV2(gym.Env):
 
         return {"spatial": spatial, "scalars": scalars}
 
-    # ── Simplified Reward (SEAT-inspired) ─────────────────────────────────
+    # ── Reward ─────────────────────────────────────────────────────────────
 
     def _compute_reward(self) -> float:
-        """Three-term reward: tower damage + card penalty + win/loss.
+        """Reward: tower damage + crowns + win/loss + elixir leak penalty.
 
-        Per SEAT paper (IJCAI 2019):
-          r_tower = +20 per enemy tower destroyed, -30 per own tower lost
-          r_card  = -3 per card played
-          r_win   = +50 / -50 terminal
+        No card penalty — penalizing plays taught the agent to do nothing.
+        Instead, leak penalty teaches "don't waste elixir" which naturally
+        encourages playing cards at the right time.
         """
         my_hp = self._total_tower_hp(0)
         opp_hp = self._total_tower_hp(1)
 
-        # Crown changes
-        my_crowns = self.battle.players[1].get_crown_count()  # towers I destroyed
-        opp_crowns = self.battle.players[0].get_crown_count()  # my towers destroyed
+        # Dense signal: tower HP changes (normalized by total max HP)
+        total_max = MAX_KING_HP + 2 * MAX_PRINCESS_HP
+        r_dmg_dealt = (self._prev_opp_tower_hp - opp_hp) / total_max * 5.0
+        r_dmg_taken = (self._prev_my_tower_hp - my_hp) / total_max * 2.5
+
+        # Crown milestones
+        my_crowns = self.battle.players[1].get_crown_count()
+        opp_crowns = self.battle.players[0].get_crown_count()
         crowns_scored = my_crowns - self._prev_my_crowns
         crowns_lost = opp_crowns - self._prev_opp_crowns
-
-        # Tower reward: +20 per crown scored, -30 per crown lost
-        r_tower = crowns_scored * 20.0 - crowns_lost * 30.0
-
-        # Card penalty: -3 per card played (encourages elixir efficiency)
-        r_card = -3.0 * self._cards_played_this_step
+        r_crowns = crowns_scored * 20.0 - crowns_lost * 30.0
 
         # Win/loss terminal
         r_win = 0.0
@@ -371,10 +370,9 @@ class ClashRoyaleEnvV2(gym.Env):
             elif self.battle.winner == 1:
                 r_win = -50.0
 
-        # Small dense signal: tower HP change (normalized)
-        tower_dmg_dealt = (self._prev_opp_tower_hp - opp_hp) / (MAX_KING_HP + 2 * MAX_PRINCESS_HP)
-        tower_dmg_taken = (self._prev_my_tower_hp - my_hp) / (MAX_KING_HP + 2 * MAX_PRINCESS_HP)
-        r_hp = tower_dmg_dealt * 5.0 - tower_dmg_taken * 5.0
+        # Elixir leak penalty: don't sit at 10 doing nothing
+        elixir = self.battle.players[0].elixir
+        r_leak = -0.5 if elixir >= 9.8 else 0.0
 
         # Update state
         self._prev_my_tower_hp = my_hp
@@ -382,7 +380,7 @@ class ClashRoyaleEnvV2(gym.Env):
         self._prev_my_crowns = my_crowns
         self._prev_opp_crowns = opp_crowns
 
-        return r_tower + r_card + r_win + r_hp
+        return r_dmg_dealt - r_dmg_taken + r_crowns + r_win + r_leak
 
     def _total_tower_hp(self, player_id: int) -> float:
         p = self.battle.players[player_id]
