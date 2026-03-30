@@ -423,6 +423,8 @@ def render_pool_status(
     elapsed: float,
     steps: int,
     agent_elo: float = 1000.0,
+    bench_wr: float = 0.0,
+    bench_trend: str = "",
     opponent_dist: Optional[Dict[str, int]] = None,
     pool_stats: Optional[List[Tuple[str, int, int, float]]] = None,
 ) -> str:
@@ -456,8 +458,8 @@ def render_pool_status(
         f"[{timestamp}] "
         f"ep={episode:<5d} steps={steps:>9,} | "
         f"{phase:<5s} pool={pool_size:2d} | "
-        f"elo={agent_elo:6.0f} | "
-        f"WR={recent_wr:4.1f}% cum={win_rate:4.1f}% | "
+        f"elo={agent_elo:5.0f} | "
+        f"bench={bench_wr:3.0f}%[{bench_trend}] | "
         f"R={avg_reward:+6.1f} | "
         f"vs=[{opp_str}] hard={hard_str}"
     )

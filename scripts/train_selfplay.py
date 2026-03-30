@@ -48,7 +48,8 @@ class SelfPlayCallback(BaseCallback):
         self.episode_winners = []
         self._current_reward = 0.0
         self._start_time = time.time()
-        self.benchmark_history: list = []  # [(episode, wr_vs_rule_bot)]
+        self.benchmark_history: list = []
+        self._last_bench_wr: float = 0.0
 
     def _on_step(self) -> bool:
         self._current_reward += self.locals.get("rewards", [0])[0]
@@ -73,12 +74,9 @@ class SelfPlayCallback(BaseCallback):
             if self.episode_count % self.save_every == 0:
                 self.env.save_snapshot(self.model)
 
-            # Benchmark against rule bot every save_every episodes
-            if self.episode_count % self.save_every == 0:
-                self._benchmark()
-
-            # Display progress
+            # Display progress with inline benchmark
             if self.episode_count % self.log_every == 0:
+                self._benchmark(n_games=10)
                 self._display()
 
         return True
@@ -97,12 +95,8 @@ class SelfPlayCallback(BaseCallback):
                     if info["winner"] == 0:
                         wins += 1
                     break
-        wr = wins / n_games * 100
-        from datetime import datetime
-        self.benchmark_history.append((self.episode_count, wr))
-        history_str = "→".join(f"{w:.0f}%" for _, w in self.benchmark_history[-6:])
-        ts = datetime.now().strftime("%H:%M:%S")
-        print(f"[{ts}] *** BENCH vs bot: {wins}/{n_games} ({wr:.0f}%)  trend=[{history_str}]")
+        self._last_bench_wr = wins / n_games * 100
+        self.benchmark_history.append((self.episode_count, self._last_bench_wr))
 
     def _display(self):
         total = self.wins + self.losses + self.draws
@@ -113,6 +107,9 @@ class SelfPlayCallback(BaseCallback):
         recent_wr = recent_wins / n * 100 if n > 0 else 0
 
         avg_r = np.mean(self.episode_rewards[-n:]) if self.episode_rewards else 0
+
+        # Benchmark trend
+        bench_trend = "→".join(f"{w:.0f}" for _, w in self.benchmark_history[-6:])
 
         output = render_pool_status(
             episode=self.episode_count,
@@ -125,11 +122,12 @@ class SelfPlayCallback(BaseCallback):
             elapsed=time.time() - self._start_time,
             steps=self.num_timesteps,
             agent_elo=self.env.pool.agent_elo,
+            bench_wr=self._last_bench_wr,
+            bench_trend=bench_trend,
             opponent_dist=self.env.get_opponent_distribution(),
             pool_stats=self.env.pool.get_stats_summary(),
         )
         print(output)
-        print()
 
 
 def main():
