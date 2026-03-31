@@ -1,5 +1,5 @@
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Optional, Tuple
 
 from ..mechanics.mechanic_base import BaseMechanic
 
@@ -9,73 +9,65 @@ if TYPE_CHECKING:
 
 @dataclass
 class HogRiderJump(BaseMechanic):
-    """Mechanic that allows Hog Rider to jump over rivers"""
-    jump_cooldown_ms: int = 2000  # Cooldown between jumps
-    jump_distance: float = 2.0  # Distance jumped in tiles
-    jump_height: float = 1.0  # Visual jump height
+    """Hog Rider jumps the river at a bridge over ~0.4 seconds.
+
+    In real CR the jump is a visible arc animation lasting roughly
+    10-12 game ticks (0.5s at 20fps). During the jump, the Hog
+    can still be targeted and damaged by towers.
+    """
+    jump_duration_ms: float = 400.0  # 0.4 seconds to cross river
 
     # Internal state
-    last_jump_time: int = 0
     is_jumping: bool = False
-    jump_start_pos = None
-    jump_target_pos = None
+    has_jumped: bool = False
+    jump_progress: float = 0.0  # 0.0 to 1.0
+    jump_start: Optional[Tuple[float, float]] = field(default=None, repr=False)
+    jump_end: Optional[Tuple[float, float]] = field(default=None, repr=False)
 
     def on_tick(self, entity, dt_ms: int) -> None:
-        """Handle jumping logic — Hog Rider jumps the river only at a bridge."""
-        from ..entities import Troop  # Local import to avoid circular dependency at module load
+        from ..entities import Troop
 
-        if not isinstance(entity, Troop):
+        if not isinstance(entity, Troop) or self.has_jumped:
             return
 
-        # Check if we're approaching the river (y=15-16)
-        current_x = entity.position.x
-        current_y = entity.position.y
+        # Continue jump in progress
+        if self.is_jumping:
+            self.jump_progress += dt_ms / self.jump_duration_ms
+            if self.jump_progress >= 1.0:
+                # Jump complete
+                entity.position.x = self.jump_end[0]
+                entity.position.y = self.jump_end[1]
+                self.is_jumping = False
+                self.has_jumped = True
+            else:
+                # Interpolate position
+                t = self.jump_progress
+                entity.position.x = self.jump_start[0] + (self.jump_end[0] - self.jump_start[0]) * t
+                entity.position.y = self.jump_start[1] + (self.jump_end[1] - self.jump_start[1]) * t
+            return
 
-        # Only jump when on a bridge tile AND at the river edge
-        on_left_bridge = 2.0 <= current_x < 5.0
-        on_right_bridge = 13.0 <= current_x < 16.0
-        on_bridge = on_left_bridge or on_right_bridge
+        # Check if we should start jumping
+        cx = entity.position.x
+        cy = entity.position.y
 
-        approaching_river = (
-            (entity.player_id == 0 and 14.5 <= current_y <= 15.5) or
-            (entity.player_id == 1 and 16.5 <= current_y <= 17.5)
+        on_left_bridge = 2.0 <= cx < 5.0
+        on_right_bridge = 13.0 <= cx < 16.0
+        if not (on_left_bridge or on_right_bridge):
+            return
+
+        # Player 0 approaches river from below (y increasing toward 15)
+        # Player 1 approaches river from above (y decreasing toward 16)
+        should_jump = (
+            (entity.player_id == 0 and 14.5 <= cy <= 15.5) or
+            (entity.player_id == 1 and 16.5 <= cy <= 17.5)
         )
 
-        if not self.is_jumping and on_bridge and approaching_river:
-            self._start_jump(entity)
-
-        # Handle jump animation
-        if self.is_jumping:
-            self._update_jump(entity, dt_ms)
-
-    def _start_jump(self, entity) -> None:
-        """Initiate jump over river"""
-        self.is_jumping = True
-        self.jump_start_pos = (entity.position.x, entity.position.y)
-
-        # Calculate jump target (other side of river)
-        if entity.player_id == 0:  # Blue jumping to red side
-            target_y = 18.0
-        else:  # Red jumping to blue side
-            target_y = 14.0
-
-        self.jump_target_pos = (entity.position.x, target_y)
-
-        # Record jump time
-        if hasattr(entity, 'battle_state') and hasattr(entity.battle_state, 'time'):
-            self.last_jump_time = int(entity.battle_state.time * 1000)
-
-    def _update_jump(self, entity, dt_ms: int) -> None:
-        """Update jump progress"""
-        if not self.jump_target_pos:
-            return
-
-        # Simple instant jump for now
-        # Could add smooth interpolation animation here
-        entity.position.x = self.jump_target_pos[0]
-        entity.position.y = self.jump_target_pos[1]
-        self.is_jumping = False
-
-        # Clear any pathfinding blockers
-        if hasattr(entity, '_pathfind_target'):
-            entity._pathfind_target = None
+        if should_jump:
+            self.is_jumping = True
+            self.jump_progress = 0.0
+            self.jump_start = (cx, cy)
+            # Land on the other side of the river
+            if entity.player_id == 0:
+                self.jump_end = (cx, 18.0)
+            else:
+                self.jump_end = (cx, 14.0)
