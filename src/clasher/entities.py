@@ -914,11 +914,14 @@ class Building(Entity):
             for mechanic in self.mechanics:
                 mechanic.on_attack_start(self, target)
 
-            # Check if this building uses projectiles
-            if self._uses_projectiles():
+            # Towers deal direct damage (projectiles travel fast enough in real CR
+            # that the delay is negligible). Non-tower buildings use projectiles.
+            is_tower = getattr(self, "_is_king_tower", False) or self.card_stats.name in ("Tower", "KingTower", "PrincessTower")
+            if is_tower:
+                self._deal_attack_damage(target, self.damage, battle_state)
+            elif self._uses_projectiles():
                 self._create_projectile(target, battle_state)
             else:
-                # Direct attack
                 self._deal_attack_damage(target, self.damage, battle_state)
 
             # Call on_attack_hit for all mechanics
