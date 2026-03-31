@@ -145,7 +145,7 @@ def main():
         sel.register(proc.stdout, selectors.EVENT_READ, data=i)
 
     agent_names = ["MAIN", "EXPL", "LEAG"]
-    last_ep_group = [0, 0, 0]  # track which epoch group each agent last printed
+    last_ep_group = [0] * len(agents)  # track which epoch group each agent last printed
     lines_in_group = 0
 
     try:
@@ -170,7 +170,7 @@ def main():
                             last_ep_group[idx] = ep
                             lines_in_group += 1
                             # Add blank line after all 3 agents report same epoch
-                            if lines_in_group >= 3:
+                            if lines_in_group >= len(agents):
                                 lines_in_group = 0
 
                     # Print to terminal
