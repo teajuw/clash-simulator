@@ -207,6 +207,7 @@ def main():
     parser.add_argument("--round-size", type=int, default=500)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--resume", type=str, default=None)
     args = parser.parse_args()
 
     os.makedirs(SNAPSHOT_DIR, exist_ok=True)
@@ -232,11 +233,15 @@ def main():
                            expert_episodes=args.kickstart_eps,
                            decay_episodes=args.decay_eps)
 
-    model = PPO("MultiInputPolicy", env, verbose=0, seed=args.seed,
-                device="cpu", policy_kwargs=POLICY_KWARGS,
-                n_steps=512, batch_size=64, n_epochs=4,
-                gamma=0.99, gae_lambda=0.95, learning_rate=3e-4,
-                clip_range=0.2, ent_coef=0.025)
+    if args.resume:
+        model = PPO.load(args.resume, env=env, device="cpu")
+        print(f"  Resumed from {args.resume}")
+    else:
+        model = PPO("MultiInputPolicy", env, verbose=0, seed=args.seed,
+                    device="cpu", policy_kwargs=POLICY_KWARGS,
+                    n_steps=512, batch_size=64, n_epochs=4,
+                    gamma=0.99, gae_lambda=0.95, learning_rate=3e-4,
+                    clip_range=0.2, ent_coef=0.025)
 
     kickstart_steps = (args.kickstart_eps + args.decay_eps) * STEPS_PER_EP
     cb = LogCallback("KICK", log_every=args.log_every)
