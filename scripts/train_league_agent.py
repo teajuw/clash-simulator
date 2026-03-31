@@ -490,13 +490,22 @@ class LeagueCallback(BaseCallback):
             trend = "→".join(f"{b}" for b in self._bench_history[-6:])
             bench_str = f" bench={self._last_bench:3d}%[{trend}]"
 
+        # Current opponent
+        opp_str = ""
+        if self.opponent_state:
+            snap = self.opponent_state.get("snapshot", "")
+            if snap:
+                opp_str = f" vs={Path(snap).stem}"
+            else:
+                opp_str = " vs=fallback"
+
         print(
             f"{self.log_prefix} [{ts}] "
             f"ep={self.episode_count:<5d} steps={self.num_timesteps:>9,} | "
             f"pool={pool_size:2d} |{bench_str} "
             f"WR={recent_wr:4.1f}% cum={wr:4.1f}% | "
             f"R={avg_r:+6.1f} | "
-            f"{sps:.0f} sps {elapsed_str}"
+            f"{sps:.0f} sps {elapsed_str}{opp_str}"
         )
 
 
