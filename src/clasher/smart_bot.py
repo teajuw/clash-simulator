@@ -95,29 +95,29 @@ class SmartBot:
             battle.deploy_card(self.pid, "Cannon", Position(9.0, cy))
             return True
 
-        # Musketeer for ranged defense (behind tower, same side as threat)
+        # Musketeer for ranged defense (in front of tower, same side as threat)
         if "Musketeer" in hand and elixir >= 4:
             mx = 5.0 if is_left else 13.0
-            my = 27.0 if self.is_top else 5.0
+            my = 23.0 if self.is_top else 9.0  # in front, not behind
             battle.deploy_card(self.pid, "Musketeer", Position(mx, my))
             return True
 
         # Ice Spirit to freeze approaching troops
         if "IceSpirit" in hand and elixir >= 1:
-            # Place between threat and our tower
+            # Place between threat and our tower (but in front of tower)
             if self.is_top:
-                sy = min(28.0, threat.position.y + 2)
+                sy = min(24.0, threat.position.y + 2)
             else:
-                sy = max(4.0, threat.position.y - 2)
+                sy = max(8.0, threat.position.y - 2)
             battle.deploy_card(self.pid, "IceSpirit", Position(tx, sy))
             return True
 
         # Skeletons to distract
         if "Skeletons" in hand and elixir >= 1:
             if self.is_top:
-                sy = min(28.0, threat.position.y + 1)
+                sy = min(24.0, threat.position.y + 1)
             else:
-                sy = max(4.0, threat.position.y - 1)
+                sy = max(8.0, threat.position.y - 1)
             battle.deploy_card(self.pid, "Skeletons", Position(tx, sy))
             return True
 
@@ -137,9 +137,9 @@ class SmartBot:
         # Ice Golem as emergency tank
         if "IceGolem" in hand and elixir >= 2:
             if self.is_top:
-                gy = min(28.0, threat.position.y + 1)
+                gy = min(24.0, threat.position.y + 1)
             else:
-                gy = max(4.0, threat.position.y - 1)
+                gy = max(8.0, threat.position.y - 1)
             battle.deploy_card(self.pid, "IceGolem", Position(tx, gy))
             return True
 
@@ -196,8 +196,8 @@ class SmartBot:
             else:
                 return
 
-        # Behind king tower
-        ky = 28.0 if self.is_top else 4.0
+        # In front of king tower (avoid getting stuck behind)
+        ky = 24.0 if self.is_top else 8.0
         battle.deploy_card(self.pid, card, Position(9.0, ky))
 
     def _find_cluster(self, battle) -> Optional[Position]:
