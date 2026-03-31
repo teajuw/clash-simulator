@@ -437,12 +437,9 @@ def main():
         # ── Level advancement ─────────────────────────────────────────
         target = lvl["bench_target"]
         if target is not None and b >= target:
-            # Check 3 consecutive passes
-            recent = bench_history[-3:]
-            if len(recent) >= 3 and all(x >= target for x in recent):
-                level = min(level + 1, len(LEVELS) - 1)
-                stagnation_counter = 0
-                print(f"\n  ▲ ADVANCING TO LEVEL {level}: {LEVELS[level]['name']}\n")
+            level = min(level + 1, len(LEVELS) - 1)
+            stagnation_counter = 0
+            print(f"\n  ▲ ADVANCING TO LEVEL {level}: {LEVELS[level]['name']}\n")
         elif level == 2:
             # Self-play: advance to level 3 on stagnation
             if b <= prev_bench:
