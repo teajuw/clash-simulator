@@ -91,10 +91,13 @@ class TrainCallback(BaseCallback):
         return True
 
 
-def benchmark(model, opponent="training_bot", n=10) -> int:
-    """Returns win percentage."""
-    env = ClashRoyaleEnvV3(opponent=opponent if opponent != "none" else "none",
-                           domain_randomization=False)
+def benchmark(model, bot_level=None, n=10) -> int:
+    """Benchmark against the current curriculum level bot. Returns win %."""
+    env = ClashRoyaleEnvV3(opponent="none", domain_randomization=False)
+    if bot_level is not None and bot_level > 0:
+        env._opponent_fn = make_curriculum_bot_policy(level=bot_level)
+    elif bot_level == 0 or bot_level is None:
+        env._opponent_fn = lambda b: None
     wins = 0
     for i in range(n):
         obs, _ = env.reset(seed=i + 1000)
@@ -300,19 +303,25 @@ def main():
     rng = np.random.default_rng(args.seed)
 
     LEVELS = [
-        {"name": "NO OPPONENT",      "bench_target": 90, "bench_opponent": "none"},
-        {"name": "PREDICTABLE BOT",  "bench_target": 70, "bench_opponent": "training_bot"},
-        {"name": "SELF-PLAY",        "bench_target": None, "bench_opponent": "training_bot"},
-        {"name": "SELF-PLAY+MINIMAX","bench_target": None, "bench_opponent": "training_bot"},
+        {"name": "NO OPPONENT",         "bot_level": 0, "bench_target": 90, "bench_opponent": "none"},
+        {"name": "HOG ONLY",            "bot_level": 1, "bench_target": 70, "bench_opponent": "none"},
+        {"name": "HOG + MUSKETEER",     "bot_level": 2, "bench_target": 60, "bench_opponent": "none"},
+        {"name": "HOG + CANNON",        "bot_level": 3, "bench_target": 60, "bench_opponent": "none"},
+        {"name": "HOG + MUSK + CANNON", "bot_level": 4, "bench_target": 60, "bench_opponent": "none"},
+        {"name": "SELF-PLAY",           "bot_level": None, "bench_target": None, "bench_opponent": "training_bot"},
+        {"name": "SELF-PLAY + MINIMAX", "bot_level": None, "bench_target": None, "bench_opponent": "training_bot"},
     ]
 
     print("=" * 65)
     print("  CLASH ROYALE RL V3 — CURRICULUM + MINIMAX")
     print("=" * 65)
-    print("  Level 0: No opponent         → advance at bench ≥ 90%")
-    print("  Level 1: Predictable bot     → advance at bench ≥ 70%")
-    print("  Level 2: Self-play           → advance when Elo plateaus")
-    print("  Level 3: Self-play + Minimax → final stage")
+    print("  L0: No opponent         → bench ≥ 90%")
+    print("  L1: Hog only            → bench ≥ 70%")
+    print("  L2: Hog + Musketeer     → bench ≥ 60%")
+    print("  L3: Hog + Cannon        → bench ≥ 60%")
+    print("  L4: Hog + Musk + Cannon → bench ≥ 60%")
+    print("  L5: Self-play           → stagnation")
+    print("  L6: Self-play + Minimax → final")
     print("=" * 65)
     print()
 
@@ -348,22 +357,25 @@ def main():
         round_num += 1
 
         # ── Set opponent based on level ───────────────────────────────
-        if level == 0:
-            env._opponent_fn = lambda b: None
+        bot_level = lvl.get("bot_level")
+        if bot_level is not None:
+            # Curriculum levels 0-4
+            if bot_level == 0:
+                env._opponent_fn = lambda b: None
+            else:
+                env._opponent_fn = make_curriculum_bot_policy(level=bot_level)
             env._domain_rand.enabled = False
-        elif level == 1:
-            curriculum_bot = make_curriculum_bot_policy()
-            env._opponent_fn = curriculum_bot
-            env._domain_rand.enabled = False
-        elif level == 2:
+        elif level == len(LEVELS) - 2:
+            # Self-play (no minimax)
             env._opponent_fn = make_selfplay_opponent(SNAPSHOT_DIR, rng, include_mmax=False)
             env._domain_rand.enabled = True
-        elif level == 3:
+        elif level == len(LEVELS) - 1:
+            # Self-play + minimax
             env._opponent_fn = make_selfplay_opponent(SNAPSHOT_DIR, rng, include_mmax=True)
             env._domain_rand.enabled = True
 
         # ── MMAX round (level 3 only) ────────────────────────────────
-        if level == 3:
+        if level == len(LEVELS) - 1:  # Self-play + Minimax (final level)
             print(f"── L{level} Round {round_num}A: MMAX vs main_latest ──")
 
             if mmax_model is None:
@@ -419,7 +431,7 @@ def main():
         model.save(os.path.join(SNAPSHOT_DIR, f"main_{round_num}"))
 
         # Benchmark
-        b = benchmark(model, opponent=lvl["bench_opponent"])
+        b = benchmark(model, bot_level=lvl.get("bot_level"))
         bench_history.append(b)
         bench_trend = "→".join(str(x) for x in bench_history[-6:])
 
@@ -440,16 +452,16 @@ def main():
             level = min(level + 1, len(LEVELS) - 1)
             stagnation_counter = 0
             print(f"\n  ▲ ADVANCING TO LEVEL {level}: {LEVELS[level]['name']}\n")
-        elif level == 2:
-            # Self-play: advance to level 3 on stagnation
+        elif level == len(LEVELS) - 2:
+            # Self-play: advance to minimax on stagnation
             if b <= prev_bench:
                 stagnation_counter += 1
             else:
                 stagnation_counter = 0
             if stagnation_counter >= 5:
-                level = 3
+                level = len(LEVELS) - 1
                 stagnation_counter = 0
-                print(f"\n  ▲ ADVANCING TO LEVEL 3: SELF-PLAY + MINIMAX\n")
+                print(f"\n  ▲ ADVANCING TO LEVEL {level}: {LEVELS[level]['name']}\n")
 
         prev_bench = b
         print()
