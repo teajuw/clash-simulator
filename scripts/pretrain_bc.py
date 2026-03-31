@@ -152,50 +152,59 @@ def behavioral_cloning(spatial, scalars, actions, env, epochs=20, lr=1e-3, batch
     total_params = sum(p.numel() for p in policy.parameters())
     print(f"  Network params: {total_params:,}")
 
-    # Prepare tensors
+    # Filter: keep ALL frames for card choice, but only PLAY frames for x/y
+    # This teaches: "when to play" from full data, "where to play" from play-only data
     spatial_t = torch.FloatTensor(spatial)
     scalars_t = torch.FloatTensor(scalars)
-    # Actions: MultiDiscrete([5, 18, 15]) — 3 separate classification heads
     actions_card = torch.LongTensor(actions[:, 0])
     actions_x = torch.LongTensor(actions[:, 1])
     actions_y = torch.LongTensor(actions[:, 2])
 
-    dataset = TensorDataset(spatial_t, scalars_t, actions_card, actions_x, actions_y)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    # Also create play-only dataset for x/y training
+    play_mask = actions[:, 0] > 0
+    play_spatial = torch.FloatTensor(spatial[play_mask])
+    play_scalars = torch.FloatTensor(scalars[play_mask])
+    play_x = torch.LongTensor(actions[play_mask, 1])
+    play_y = torch.LongTensor(actions[play_mask, 2])
+    play_card = torch.LongTensor(actions[play_mask, 0])
+
+    print(f"  Play frames: {play_mask.sum():,} / {len(actions):,} ({play_mask.sum()/len(actions)*100:.0f}%)")
+
+    # Full dataset for card choice
+    full_dataset = TensorDataset(spatial_t, scalars_t, actions_card)
+    full_loader = DataLoader(full_dataset, batch_size=batch_size, shuffle=True)
+
+    # Play-only dataset for card + position
+    play_dataset = TensorDataset(play_spatial, play_scalars, play_card, play_x, play_y)
+    play_loader = DataLoader(play_dataset, batch_size=min(batch_size, len(play_dataset)), shuffle=True)
 
     optimizer = torch.optim.Adam(policy.parameters(), lr=lr)
     loss_fn = nn.CrossEntropyLoss()
 
-    # Weight card actions higher (most are WAIT=0)
+    # Strong weighting for play actions
     wait_count = (actions[:, 0] == 0).sum()
     play_count = len(actions) - wait_count
     card_weights = torch.ones(N_CARD_CHOICES)
     if wait_count > 0 and play_count > 0:
-        card_weights[1:] = wait_count / max(1, play_count) * 2.0
+        card_weights[1:] = wait_count / max(1, play_count) * 5.0  # 5x weight
     card_loss_fn = nn.CrossEntropyLoss(weight=card_weights)
 
     for epoch in range(epochs):
         total_loss = 0
         correct_card = 0
+        correct_play = 0
         total = 0
+        total_play = 0
 
-        for batch_sp, batch_sc, batch_ac, batch_ax, batch_ay in loader:
+        # Phase 1: Train card choice on ALL data (when to play vs wait)
+        for batch_sp, batch_sc, batch_ac in full_loader:
             obs = {"spatial": batch_sp, "scalars": batch_sc}
-
-            # Forward through feature extractor
             features = policy.extract_features(obs, policy.features_extractor)
             latent_pi, _ = policy.mlp_extractor(features)
             action_logits = policy.action_net(latent_pi)
 
-            # Split logits for MultiDiscrete: [5, 18, 15] = 38 total
             card_logits = action_logits[:, :N_CARD_CHOICES]
-            x_logits = action_logits[:, N_CARD_CHOICES:N_CARD_CHOICES + GRID_X]
-            y_logits = action_logits[:, N_CARD_CHOICES + GRID_X:]
-
-            loss_card = card_loss_fn(card_logits, batch_ac)
-            loss_x = loss_fn(x_logits, batch_ax)
-            loss_y = loss_fn(y_logits, batch_ay)
-            loss = loss_card + loss_x + loss_y
+            loss = card_loss_fn(card_logits, batch_ac)
 
             optimizer.zero_grad()
             loss.backward()
@@ -205,15 +214,32 @@ def behavioral_cloning(spatial, scalars, actions, env, epochs=20, lr=1e-3, batch
             correct_card += (card_logits.argmax(1) == batch_ac).sum().item()
             total += len(batch_sp)
 
-        avg_loss = total_loss / total
-        card_acc = correct_card / total * 100
-        play_pct = play_count / len(actions) * 100
-        print(f"  Epoch {epoch+1:2d}/{epochs}: loss={avg_loss:.4f} card_acc={card_acc:.1f}% (play={play_pct:.0f}%)")
+        # Phase 2: Train position (x, y) on PLAY-ONLY data (where to place)
+        for batch_sp, batch_sc, batch_ac, batch_ax, batch_ay in play_loader:
+            obs = {"spatial": batch_sp, "scalars": batch_sc}
+            features = policy.extract_features(obs, policy.features_extractor)
+            latent_pi, _ = policy.mlp_extractor(features)
+            action_logits = policy.action_net(latent_pi)
 
-    # Scale down action weights to prevent MaskablePPO Simplex issues
-    with torch.no_grad():
-        for param in policy.action_net.parameters():
-            param.mul_(0.3)
+            card_logits = action_logits[:, :N_CARD_CHOICES]
+            x_logits = action_logits[:, N_CARD_CHOICES:N_CARD_CHOICES + GRID_X]
+            y_logits = action_logits[:, N_CARD_CHOICES + GRID_X:]
+
+            loss = card_loss_fn(card_logits, batch_ac) + loss_fn(x_logits, batch_ax) + loss_fn(y_logits, batch_ay)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            correct_play += (card_logits.argmax(1) == batch_ac).sum().item()
+            total_play += len(batch_sp)
+
+        avg_loss = total_loss / max(1, total)
+        card_acc = correct_card / max(1, total) * 100
+        play_acc = correct_play / max(1, total_play) * 100
+        print(f"  Epoch {epoch+1:2d}/{epochs}: loss={avg_loss:.4f} card_acc={card_acc:.1f}% play_acc={play_acc:.1f}%")
+
+    # No weight scaling — vanilla PPO doesn't have the Simplex issue
 
     return model
 
