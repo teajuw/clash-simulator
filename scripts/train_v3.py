@@ -246,6 +246,7 @@ class RoundCallback(BaseCallback):
         self.episode_rewards = []
         self._current_reward = 0.0
         self._start_time = time.time()
+        self._round_start_steps = None  # set on first step
 
     def _on_step(self):
         self._current_reward += self.locals.get("rewards", [0])[0]
@@ -265,6 +266,9 @@ class RoundCallback(BaseCallback):
                 self._display()
         return True
 
+    def _on_training_start(self):
+        self._round_start_steps = self.num_timesteps
+
     def _display(self):
         ts = datetime.now().strftime("%H:%M:%S")
         total = self.wins + self.losses
@@ -272,10 +276,11 @@ class RoundCallback(BaseCallback):
         n = min(self.log_every, len(self.episode_rewards))
         avg_r = np.mean(self.episode_rewards[-n:]) if self.episode_rewards else 0
         elapsed = time.time() - self._start_time
-        sps = self.num_timesteps / elapsed if elapsed > 0 else 0
+        round_steps = self.num_timesteps - (self._round_start_steps or 0)
+        sps = round_steps / elapsed if elapsed > 0 else 0
         el = f"{elapsed/60:.0f}m" if elapsed < 3600 else f"{elapsed/3600:.1f}h"
         print(f"[{self.agent_name}] [{ts}] ep={self.episode_count:<5d} "
-              f"steps={self.num_timesteps:>9,} | WR={wr:4.1f}% | "
+              f"steps={round_steps:>9,} | WR={wr:4.1f}% | "
               f"R={avg_r:+6.1f} | {sps:.0f} sps {el}")
 
 
