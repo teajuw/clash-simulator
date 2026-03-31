@@ -10,8 +10,10 @@ import os
 import random
 from collections import deque
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-os.chdir(os.path.join(os.path.dirname(__file__), ".."))
+REPO_ROOT = os.path.join(os.path.dirname(__file__), "..")
+sys.path.insert(0, os.path.join(REPO_ROOT, "src"))
+sys.path.insert(0, REPO_ROOT)
+os.chdir(REPO_ROOT)
 
 import clasher.config as cfg
 cfg.VERBOSE = False
