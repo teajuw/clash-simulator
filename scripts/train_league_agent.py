@@ -391,46 +391,30 @@ class LeagueCallback(BaseCallback):
                     self._best_wr_ep = self.episode_count
 
             elif self.role == "entropy_explorer":
-                # Don't start explore/exploit schedule until main has a snapshot
-                main_zips = sorted(glob(os.path.join(self.snapshot_dir, "main_*.zip")))
-                if not main_zips:
-                    pass  # still warmup, keep exploring against fallback
-                else:
-                    if self._explorer_phase_start == 0:
-                        # First main snapshot just appeared — start the clock
-                        self._explorer_phase_start = self.episode_count
-                        self._explorer_phase = "explore"
-                        self.model.ent_coef = 0.10
-                        print(f"{self.log_prefix} Main snapshot found, starting explore phase")
-
-                # Entropy schedule: explore (0.10) for 200 eps, exploit (0.02) after
-                eps_in_phase = self.episode_count - self._explorer_phase_start if self._explorer_phase_start > 0 else 0
-                if self._explorer_phase == "explore" and self._explorer_phase_start > 0 and eps_in_phase >= 200:
-                    self._explorer_phase = "exploit"
-                    self._explorer_phase_start = self.episode_count
-                    self.model.ent_coef = 0.02
-                    print(f"{self.log_prefix} Phase: exploit (ent→0.02)")
-
-                # Save quality exploits during exploit phase
-                if self._explorer_phase == "exploit" and self.episode_count % self.save_every == 0:
+                # Always high entropy — pure discovery agent
+                # Save any snapshot that beats main > 60%
+                if self.episode_count % self.save_every == 0:
                     self._quality_save(min_wr=0.6)
 
-                # Track stagnation during exploit phase
-                if self._explorer_phase == "exploit":
-                    wr = self._recent_wr()
-                    if wr > self._best_wr:
-                        self._best_wr = wr
-                        self._best_wr_ep = self.episode_count
+                # Track stagnation — reset to latest main if no improvement
+                wr = self._recent_wr()
+                if wr > self._best_wr:
+                    self._best_wr = wr
+                    self._best_wr_ep = self.episode_count
 
-                    eps_since_improvement = self.episode_count - self._best_wr_ep
-                    if eps_since_improvement >= self._stagnation_patience:
-                        self._explorer_phase = "explore"
-                        self._explorer_phase_start = self.episode_count
-                        self.model.ent_coef = 0.10
-                        self._reset_to_main()
-                        self._best_wr = 0.0
-                        self._best_wr_ep = self.episode_count
-                        print(f"{self.log_prefix} Stagnated at WR={wr:.0%}, resetting (ent→0.10)")
+                # Reset best_wr when pool first appears (warmup inflation)
+                pool_size = len(glob(os.path.join(self.snapshot_dir, "*.zip")))
+                if pool_size > 0 and self._best_wr > 0.75 and self._best_wr_ep < 500:
+                    self._best_wr = 0.0
+                    self._best_wr_ep = self.episode_count
+
+                eps_since_improvement = self.episode_count - self._best_wr_ep
+                if (self.episode_count > 500
+                        and eps_since_improvement >= self._stagnation_patience):
+                    self._reset_to_main()
+                    self._best_wr = 0.0
+                    self._best_wr_ep = self.episode_count
+                    print(f"{self.log_prefix} Stagnated at WR={wr:.0%}, resetting")
 
             elif self.role == "league_exploiter":
                 # Save on schedule (no quality gate — diverse strategies welcome)
