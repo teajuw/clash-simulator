@@ -28,50 +28,44 @@ PLACEMENTS = {
 
 
 class CurriculumBot:
-    """Predictable bot that plays a fixed cycle on a timer."""
+    """Predictable bot that plays a fixed cycle on elixir cooldown.
+
+    Plays the next card in the cycle as soon as it can afford it.
+    No timer — purely elixir-gated. This matches real CR pacing
+    where you can only play as fast as elixir regenerates.
+    """
 
     def __init__(self):
         self.cycle_idx = 0
-        self.last_play_time = -5.0  # play immediately at start
-        self.play_interval = 5.0   # seconds between plays
-        self.hog_bridge_x = _random.choice([3.5, 14.5])  # fixed per game
+        self.hog_bridge_x = _random.choice([3.5, 14.5])
 
     def reset(self):
-        """Call on game reset."""
         self.cycle_idx = 0
-        self.last_play_time = -5.0
         self.hog_bridge_x = _random.choice([3.5, 14.5])
 
     def act(self, battle: BattleState) -> None:
-        """Play next card in cycle if timer elapsed."""
+        """Play next card in cycle when affordable."""
         player = battle.players[1]
-        game_time = battle.time
 
-        if game_time - self.last_play_time < self.play_interval:
+        card_name = CYCLE[self.cycle_idx % len(CYCLE)]
+
+        # Wait until this card is in hand AND affordable
+        if card_name not in player.hand:
             return
 
-        # Find next card in cycle that's in hand
-        for _ in range(len(CYCLE)):
-            card_name = CYCLE[self.cycle_idx % len(CYCLE)]
+        from .env_v3 import ELIXIR_COST
+        cost = ELIXIR_COST.get(card_name, 10)
+        if player.elixir < cost:
+            return
+
+        # Deploy
+        if card_name == "HogRider":
+            pos = Position(self.hog_bridge_x, 18.0)
+        else:
+            pos = PLACEMENTS[card_name]
+
+        if battle.deploy_card(1, card_name, pos):
             self.cycle_idx += 1
-
-            if card_name not in player.hand:
-                continue
-
-            from .env_v3 import ELIXIR_COST
-            cost = ELIXIR_COST.get(card_name, 10)
-            if player.elixir < cost:
-                return  # can't afford, wait
-
-            # Get position
-            if card_name == "HogRider":
-                pos = Position(self.hog_bridge_x, 18.0)
-            else:
-                pos = PLACEMENTS[card_name]
-
-            if battle.deploy_card(1, card_name, pos):
-                self.last_play_time = game_time
-                return
 
 
 def make_curriculum_bot_policy():
