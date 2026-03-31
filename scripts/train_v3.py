@@ -97,12 +97,16 @@ class TrainCallback(BaseCallback):
 
 
 def benchmark(model, bot_level=None, n=10) -> int:
-    """Benchmark against the current curriculum level bot. Returns win %."""
+    """Benchmark against curriculum bot or smart bot. Returns win %."""
     env = ClashRoyaleEnvV3(opponent="none", domain_randomization=False)
     if bot_level is not None and bot_level > 0:
         env._opponent_fn = make_curriculum_bot_policy(level=bot_level)
-    elif bot_level == 0 or bot_level is None:
+    elif bot_level == 0:
         env._opponent_fn = lambda b: None
+    else:
+        # Self-play levels: benchmark against smart bot
+        from clasher.smart_bot import make_smart_bot_policy
+        env._opponent_fn = make_smart_bot_policy(player_id=1)
     wins = 0
     for i in range(n):
         obs, _ = env.reset(seed=i + 1000)
@@ -342,6 +346,13 @@ def main():
                      n_steps=512, batch_size=64, n_epochs=4,
                      gamma=0.99, gae_lambda=0.95, learning_rate=3e-4,
                      clip_range=0.2, ent_coef=0.025)
+
+    # Seed the pool if starting at self-play levels with a resume model
+    if args.start_level >= 5 and args.resume:
+        model.save(os.path.join(SNAPSHOT_DIR, "main_latest"))
+        model.save(os.path.join(SNAPSHOT_DIR, "main_best"))
+        model.save(os.path.join(SNAPSHOT_DIR, "main_0"))
+        print(f"  Seeded pool with initial model")
 
     # MMAX model (created when needed)
     mmax_model = None
