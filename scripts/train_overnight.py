@@ -203,7 +203,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--total-episodes", type=int, default=20000)
     parser.add_argument("--kickstart-eps", type=int, default=500)
-    parser.add_argument("--decay-eps", type=int, default=500)
+    parser.add_argument("--decay-eps", type=int, default=2000)
     parser.add_argument("--round-size", type=int, default=500)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
