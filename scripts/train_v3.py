@@ -329,7 +329,7 @@ def main():
     # ── Create models ─────────────────────────────────────────────────────
 
     # MAIN
-    main_env = ClashRoyaleEnvV3(opponent="training_bot")
+    main_env = ClashRoyaleEnvV3(opponent="training_bot", domain_randomization=False)
     if args.resume:
         main_model = PPO.load(args.resume, env=main_env, device="cpu")
         print(f"Resumed MAIN from {args.resume}")
@@ -363,6 +363,9 @@ def main():
     cb = RoundCallback("MAIN warmup", log_every=args.log_every)
     main_model.learn(total_timesteps=warmup_steps, callback=cb, reset_num_timesteps=False)
     total_main_eps += cb.episode_count
+
+    # Enable domain randomization now that basics are learned
+    main_env._domain_rand.enabled = True
 
     # Save first snapshots
     main_model.save(os.path.join(SNAPSHOT_DIR, "main_latest"))
