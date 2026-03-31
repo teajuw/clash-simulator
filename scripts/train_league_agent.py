@@ -125,8 +125,13 @@ def make_pool_opponent(snapshot_dir: str, role: str):
                 return
 
             if role in ("minimax_exploiter", "entropy_explorer"):
-                main_zips = _get_main_snapshots()
-                path = main_zips[-1] if main_zips else zips[-1]
+                # Prefer main_latest if it exists (always freshest)
+                latest = os.path.join(snapshot_dir, "main_latest.zip")
+                if os.path.exists(latest):
+                    path = latest
+                else:
+                    main_zips = _get_main_snapshots()
+                    path = main_zips[-1] if main_zips else zips[-1]
             elif role == "main" and pfsp:
                 # PFSP weighted selection
                 path = pfsp.sample(zips)
@@ -351,6 +356,17 @@ class LeagueCallback(BaseCallback):
                     path = os.path.join(self.snapshot_dir,
                                         f"main_{self.episode_count}")
                     self.model.save(path)
+                    # Always update main_latest (exploiters see freshest version)
+                    latest_path = os.path.join(self.snapshot_dir, "main_latest")
+                    self.model.save(latest_path)
+
+                # Update main_best if benchmark is a new high
+                if (self._bench_history
+                        and self._last_bench >= max(self._bench_history)
+                        and self._last_bench > 0):
+                    best_path = os.path.join(self.snapshot_dir, "main_best")
+                    self.model.save(best_path)
+                    print(f"{self.log_prefix} New best! bench={self._last_bench}%")
 
             elif self.role == "minimax_exploiter":
                 # Reset best_wr when pool first appears (warmup WR is meaningless)
