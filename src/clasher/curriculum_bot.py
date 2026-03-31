@@ -1,10 +1,12 @@
-"""Level 1 curriculum bot: predictable 5-card loop on a timer.
+"""Level 1 curriculum bot: plays fixed cards on elixir cooldown.
 
-Plays cards on a fixed schedule regardless of what the agent does.
-No reaction, no defense logic. Just a metronome of card plays
-that the agent must learn to defend against.
+Bypasses the deck/hand system entirely. Directly deploys cards
+when it can afford them. No cycling, no hand management.
 
-Slight randomization: Hog goes left or right bridge (50/50 per game).
+This teaches the agent:
+- Hog is coming, learn to defend
+- Musketeer provides ranged pressure
+- Cards come at realistic elixir pacing
 """
 
 from __future__ import annotations
@@ -14,66 +16,70 @@ import random as _random
 from .arena import Position
 from .battle import BattleState
 
-# Fixed cycle: Hog → Musketeer → Cannon → IceGolem → Skeletons → repeat
-CYCLE = ["HogRider", "Musketeer", "Cannon", "IceGolem", "Skeletons"]
-
-# Placement positions for player 1 (top side)
-PLACEMENTS = {
-    "HogRider": None,      # set per game (left or right bridge)
-    "Musketeer": Position(13.0, 27.0),   # behind right tower
-    "Cannon": Position(9.0, 22.0),        # center pull
-    "IceGolem": Position(9.0, 28.0),      # behind king tower
-    "Skeletons": Position(9.0, 20.0),     # mid field
+ELIXIR_COST = {
+    "HogRider": 4, "Musketeer": 4, "Cannon": 3, "IceGolem": 2, "Skeletons": 1,
 }
+
+# Play order and positions for player 1
+PLAY_ORDER = [
+    ("HogRider",  None),          # bridge position set per game
+    ("Musketeer", Position(13.0, 27.0)),  # behind right tower
+    ("Skeletons", Position(9.0, 20.0)),   # mid field
+    ("HogRider",  None),          # bridge again
+    ("IceGolem",  Position(9.0, 28.0)),   # behind king
+]
 
 
 class CurriculumBot:
-    """Predictable bot that plays a fixed cycle on elixir cooldown.
-
-    Plays the next card in the cycle as soon as it can afford it.
-    No timer — purely elixir-gated. This matches real CR pacing
-    where you can only play as fast as elixir regenerates.
-    """
+    """Plays fixed cards directly, bypassing hand/deck system."""
 
     def __init__(self):
-        self.cycle_idx = 0
-        self.hog_bridge_x = _random.choice([3.5, 14.5])
+        self.play_idx = 0
+        self.hog_x = _random.choice([3.5, 14.5])
 
     def reset(self):
-        self.cycle_idx = 0
-        self.hog_bridge_x = _random.choice([3.5, 14.5])
+        self.play_idx = 0
+        self.hog_x = _random.choice([3.5, 14.5])
 
     def act(self, battle: BattleState) -> None:
-        """Play next card in cycle when affordable."""
         player = battle.players[1]
 
-        card_name = CYCLE[self.cycle_idx % len(CYCLE)]
+        card_name, pos = PLAY_ORDER[self.play_idx % len(PLAY_ORDER)]
+        cost = ELIXIR_COST[card_name]
 
-        # Wait until this card is in hand AND affordable
-        if card_name not in player.hand:
-            return
-
-        from .env_v3 import ELIXIR_COST
-        cost = ELIXIR_COST.get(card_name, 10)
         if player.elixir < cost:
             return
 
-        # Deploy
         if card_name == "HogRider":
-            pos = Position(self.hog_bridge_x, 18.0)
-        else:
-            pos = PLACEMENTS[card_name]
+            pos = Position(self.hog_x, 18.0)
 
-        if battle.deploy_card(1, card_name, pos):
-            self.cycle_idx += 1
+        # Spend elixir manually
+        player.elixir -= cost
+
+        # Spawn the troop/building directly (bypass hand system)
+        card_stats = battle.card_loader.get_card(card_name)
+        if card_stats is None:
+            # Try alias
+            from .card_aliases import resolve_card_name
+            resolved = resolve_card_name(card_name, battle.card_loader.load_card_definitions())
+            card_stats = battle.card_loader.get_card(resolved)
+
+        if card_stats is not None:
+            card_type = str(getattr(card_stats, "card_type", "")).lower()
+            if card_type == "building":
+                battle._spawn_entity(
+                    type(list(battle.entities.values())[0]),  # Building class
+                    pos, 1, card_stats
+                )
+            else:
+                battle._spawn_troop(pos, 1, card_stats)
+            self.play_idx += 1
 
 
 def make_curriculum_bot_policy():
-    """Create a curriculum bot with per-game state."""
     bot = CurriculumBot()
 
     def policy(battle: BattleState):
-        # Reset bot on new game (detect by time near 0)
         if battle.time < 0.1:
             bot.reset()
         bot.act(battle)
