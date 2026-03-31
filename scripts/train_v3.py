@@ -116,22 +116,37 @@ def load_opponent_model(path):
         return None
 
 
-def make_selfplay_opponent(snapshot_dir, rng):
-    """50% latest mmax, 25% main_best, 25% random history."""
+def make_selfplay_opponent(snapshot_dir, rng, include_mmax=False):
+    """Self-play opponent from pool.
+
+    Without mmax (Level 2): 50% main_best, 50% random history
+    With mmax (Level 3):    50% latest mmax, 25% main_best, 25% random history
+    """
     state = {"model": None, "reload_at": 0}
 
     def policy(battle):
         state["reload_at"] += 1
         if state["model"] is None or state["reload_at"] % 10 == 0:
             roll = rng.random()
-            if roll < 0.50:
+            path = None
+
+            if include_mmax and roll < 0.50:
+                # Latest minimax snapshot
                 mmax_zips = sorted(glob(os.path.join(snapshot_dir, "mmax_*.zip")),
                                    key=os.path.getmtime)
                 path = mmax_zips[-1] if mmax_zips else None
-            elif roll < 0.75:
+                if path is None:
+                    # No mmax yet, fall back to main_best
+                    best = os.path.join(snapshot_dir, "main_best.zip")
+                    path = best if os.path.exists(best) else None
+
+            if path is None and roll < (0.75 if include_mmax else 0.50):
+                # main_best
                 best = os.path.join(snapshot_dir, "main_best.zip")
                 path = best if os.path.exists(best) else None
-            else:
+
+            if path is None:
+                # Random history
                 history = [z for z in glob(os.path.join(snapshot_dir, "*.zip"))
                           if "main_best" not in z and "main_latest" not in z]
                 path = rng.choice(history) if history else None
@@ -341,10 +356,10 @@ def main():
             env._opponent_fn = curriculum_bot
             env._domain_rand.enabled = False
         elif level == 2:
-            env._opponent_fn = make_selfplay_opponent(SNAPSHOT_DIR, rng)
+            env._opponent_fn = make_selfplay_opponent(SNAPSHOT_DIR, rng, include_mmax=False)
             env._domain_rand.enabled = True
         elif level == 3:
-            env._opponent_fn = make_selfplay_opponent(SNAPSHOT_DIR, rng)
+            env._opponent_fn = make_selfplay_opponent(SNAPSHOT_DIR, rng, include_mmax=True)
             env._domain_rand.enabled = True
 
         # ── MMAX round (level 3 only) ────────────────────────────────
