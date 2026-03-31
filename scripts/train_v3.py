@@ -354,7 +354,7 @@ def main():
     # ── Phase 1: Warmup ───────────────────────────────────────────────────
 
     print(f"── PHASE 1: Warmup ({args.warmup} eps vs training bot) ──")
-    warmup_steps = args.warmup * 270  # ~270 steps per episode
+    warmup_steps = args.warmup * 400  # ~400 steps/ep average
     cb = RoundCallback("MAIN warmup", log_every=args.log_every)
     main_model.learn(total_timesteps=warmup_steps, callback=cb, reset_num_timesteps=False)
     total_main_eps += cb.episode_count
@@ -377,7 +377,7 @@ def main():
 
     while eps_so_far < args.total_episodes:
         round_num += 1
-        round_steps = args.round_size * 270
+        round_steps = args.round_size * 400  # ~400 steps/ep average, overshoot to ensure full rounds
 
         # ── MMAX round ────────────────────────────────────────────────
         print(f"── Round {round_num}A: MMAX vs main_latest ({args.round_size} eps) ──")
@@ -407,11 +407,10 @@ def main():
         # Restore original step
         mmax_env.step = original_step
 
-        # Quality-gated save
+        # Always save MMAX — even 50% WR contains useful minimax-targeted strategies
         mmax_wr = cb_mmax.wins / max(1, cb_mmax.wins + cb_mmax.losses) * 100
-        if mmax_wr >= 60:
-            mmax_model.save(os.path.join(SNAPSHOT_DIR, f"mmax_{round_num}"))
-            print(f"  MMAX saved exploit (WR={mmax_wr:.0f}%)")
+        mmax_model.save(os.path.join(SNAPSHOT_DIR, f"mmax_{round_num}"))
+        print(f"  MMAX saved (WR={mmax_wr:.0f}%)")
 
         # ── MAIN round ────────────────────────────────────────────────
         print(f"── Round {round_num}B: MAIN vs pool ({args.round_size} eps) ──")
