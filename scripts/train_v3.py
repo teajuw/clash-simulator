@@ -136,7 +136,7 @@ def _play_as_opponent(battle, path: str = None, model=None):
             if slot < len(player.hand):
                 card_name = player.hand[slot]
                 mirrored_y = 31 - tile_y
-                from .arena import Position
+                from clasher.arena import Position
                 pos = Position(tile_x + 0.5, mirrored_y + 0.5)
                 battle.deploy_card(1, card_name, pos)
     except Exception:
@@ -147,6 +147,7 @@ def _mirror_obs(battle):
     """Build observation from player 1's perspective."""
     from clasher.env_v3 import N_SCALARS, ARENA_W, ARENA_H, NUM_CARD_IDS
     from clasher.env_v3 import PRINCESS_TOWER_ID, KING_TOWER_ID, MAX_KING_HP, MAX_PRINCESS_HP, MAX_GAME_TIME
+    from clasher.entities import Troop, Building
 
     obs = {
         "spatial": np.zeros((3, ARENA_H, ARENA_W), dtype=np.float32),
