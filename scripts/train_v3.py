@@ -73,12 +73,17 @@ class TrainCallback(BaseCallback):
             self.rewards.append(self._r)
             self._r = 0.0
             w = self.locals.get("infos", [{}])[0].get("winner")
+            if not hasattr(self, 'winners'):
+                self.winners = []
+            self.winners.append(w)
             if w == 0: self.wins += 1
             elif w == 1: self.losses += 1
 
             if self.ep % self.log_every == 0:
-                total = self.wins + self.losses
-                wr = self.wins / total * 100 if total > 0 else 0
+                # Last 100 WR (not cumulative)
+                recent = self.winners[-100:] if hasattr(self, 'winners') else []
+                recent_wins = sum(1 for w in recent if w == 0)
+                wr = recent_wins / len(recent) * 100 if recent else 0
                 n = min(self.log_every, len(self.rewards))
                 avg_r = np.mean(self.rewards[-n:])
                 elapsed = time.time() - self._t0
@@ -303,13 +308,13 @@ def main():
     rng = np.random.default_rng(args.seed)
 
     LEVELS = [
-        {"name": "NO OPPONENT",         "bot_level": 0, "bench_target": 90, "bench_opponent": "none"},
-        {"name": "HOG ONLY",            "bot_level": 1, "bench_target": 70, "bench_opponent": "none"},
-        {"name": "HOG + MUSKETEER",     "bot_level": 2, "bench_target": 60, "bench_opponent": "none"},
-        {"name": "HOG + CANNON",        "bot_level": 3, "bench_target": 60, "bench_opponent": "none"},
-        {"name": "HOG + MUSK + CANNON", "bot_level": 4, "bench_target": 60, "bench_opponent": "none"},
-        {"name": "SELF-PLAY",           "bot_level": None, "bench_target": None, "bench_opponent": "training_bot"},
-        {"name": "SELF-PLAY + MINIMAX", "bot_level": None, "bench_target": None, "bench_opponent": "training_bot"},
+        {"name": "NO OPPONENT",         "bot_level": 0, "wr_target": 90},
+        {"name": "HOG ONLY",            "bot_level": 1, "wr_target": 40},
+        {"name": "HOG + MUSKETEER",     "bot_level": 2, "wr_target": 40},
+        {"name": "HOG + CANNON",        "bot_level": 3, "wr_target": 40},
+        {"name": "HOG + MUSK + CANNON", "bot_level": 4, "wr_target": 40},
+        {"name": "SELF-PLAY",           "bot_level": None, "wr_target": None},
+        {"name": "SELF-PLAY + MINIMAX", "bot_level": None, "wr_target": None},
     ]
 
     print("=" * 65)
@@ -446,15 +451,19 @@ def main():
         print(f"  Bench: {b}% [{bench_trend}] | Pool: {pool} | "
               f"Total eps: {total_eps} | {el}")
 
-        # ── Level advancement ─────────────────────────────────────────
-        target = lvl["bench_target"]
-        if target is not None and b >= target:
+        # ── Level advancement (based on last-100 training WR, not bench) ──
+        wr_target = lvl.get("wr_target")
+        # Get last-100 WR from callback
+        recent = cb.winners[-100:] if hasattr(cb, 'winners') and cb.winners else []
+        last100_wr = sum(1 for w in recent if w == 0) / len(recent) * 100 if recent else 0
+
+        if wr_target is not None and last100_wr >= wr_target:
             level = min(level + 1, len(LEVELS) - 1)
             stagnation_counter = 0
-            print(f"\n  ▲ ADVANCING TO LEVEL {level}: {LEVELS[level]['name']}\n")
+            print(f"\n  ▲ ADVANCING TO LEVEL {level}: {LEVELS[level]['name']} (last100 WR={last100_wr:.0f}%)\n")
         elif level == len(LEVELS) - 2:
             # Self-play: advance to minimax on stagnation
-            if b <= prev_bench:
+            if last100_wr <= prev_bench:
                 stagnation_counter += 1
             else:
                 stagnation_counter = 0
@@ -463,7 +472,7 @@ def main():
                 stagnation_counter = 0
                 print(f"\n  ▲ ADVANCING TO LEVEL {level}: {LEVELS[level]['name']}\n")
 
-        prev_bench = b
+        prev_bench = last100_wr
         print()
 
     # ── Done ──────────────────────────────────────────────────────────────
