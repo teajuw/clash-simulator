@@ -353,6 +353,12 @@ class LeagueCallback(BaseCallback):
                     self.model.save(path)
 
             elif self.role == "minimax_exploiter":
+                # Reset best_wr when pool first appears (warmup WR is meaningless)
+                pool_size = len(glob(os.path.join(self.snapshot_dir, "*.zip")))
+                if pool_size > 0 and self._best_wr > 0.75:
+                    self._best_wr = 0.0
+                    self._best_wr_ep = self.episode_count
+
                 # Load main's critic if not yet loaded
                 if (self.model.env.envs[0].unwrapped._minimax_critic is None
                         and self.episode_count % 50 == 0):
