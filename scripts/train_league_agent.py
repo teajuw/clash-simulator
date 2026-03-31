@@ -273,6 +273,9 @@ class LeagueCallback(BaseCallback):
         self._best_wr = 0.0
         self._best_wr_ep = 0
         self._stagnation_patience = 500  # reset after 500 eps without improvement
+        # Benchmark (main agent only)
+        self._bench_history = []
+        self._last_bench = 0
 
     def _recent_wr(self) -> float:
         """Win rate over last N episodes."""
@@ -418,11 +421,31 @@ class LeagueCallback(BaseCallback):
                                         f"league_exploiter_{self.episode_count}")
                     self.model.save(path)
 
+            # Benchmark (main agent only)
+            if self.role == "main" and self.episode_count % self.log_every == 0:
+                self._run_benchmark()
+
             # Display
             if self.episode_count % self.log_every == 0:
                 self._display()
 
         return True
+
+    def _run_benchmark(self, n_games=10):
+        """Run MAIN against rule bot to measure absolute skill."""
+        bench_env = ClashRoyaleEnv(opponent="rule_bot")
+        wins = 0
+        for _ in range(n_games):
+            obs, _ = bench_env.reset()
+            while True:
+                act, _ = self.model.predict(obs, deterministic=True)
+                obs, r, term, trunc, info = bench_env.step(act)
+                if term:
+                    if info["winner"] == 0:
+                        wins += 1
+                    break
+        self._last_bench = wins * 10  # percentage
+        self._bench_history.append(self._last_bench)
 
     def _display(self):
         from datetime import datetime
@@ -443,10 +466,16 @@ class LeagueCallback(BaseCallback):
         else:
             elapsed_str = f"{elapsed/60:.0f}m"
 
+        # Benchmark trend (main only)
+        bench_str = ""
+        if self.role == "main" and self._bench_history:
+            trend = "→".join(f"{b}" for b in self._bench_history[-6:])
+            bench_str = f" bench={self._last_bench:3d}%[{trend}]"
+
         print(
             f"{self.log_prefix} [{ts}] "
             f"ep={self.episode_count:<5d} steps={self.num_timesteps:>9,} | "
-            f"pool={pool_size:2d} | "
+            f"pool={pool_size:2d} |{bench_str} "
             f"WR={recent_wr:4.1f}% cum={wr:4.1f}% | "
             f"R={avg_r:+6.1f} | "
             f"{sps:.0f} sps {elapsed_str}"
