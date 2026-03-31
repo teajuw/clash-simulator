@@ -56,19 +56,23 @@ def record_demonstrations(n_games: int = 500):
 
     for game in range(n_games):
         obs, _ = env.reset(seed=game)
+        interceptor = DeployInterceptor(env.battle)
 
         while True:
-            # Get bot's action for P0
-            action = _bot_to_action(bot_p0, env.battle)
-
+            # Record observation BEFORE bot acts
             all_spatial.append(obs["spatial"].copy())
             all_scalars.append(obs["scalars"].copy())
+
+            # Bot acts (deploy is captured by interceptor, happens once)
+            action = _bot_to_action(bot_p0, env.battle, interceptor)
             all_actions.append(action.copy())
 
-            obs, r, term, trunc, info = env.step(action)
+            # Step env (P1 bot acts inside, simulation advances)
+            obs, r, term, trunc, info = env.step(np.array([0, 0, 0]))  # WAIT — bot already acted
             if term:
                 if info["winner"] == 0:
                     wins += 1
+                interceptor.restore()
                 break
 
         if (game + 1) % 100 == 0:
@@ -85,64 +89,52 @@ def record_demonstrations(n_games: int = 500):
     )
 
 
-def _bot_to_action(bot: SmartBot, battle) -> np.ndarray:
-    """Convert smart bot's decision to a MultiDiscrete([5, 18, 15]) action."""
+class DeployInterceptor:
+    """Monkey-patches battle.deploy_card to capture what the bot deploys."""
+
+    def __init__(self, battle):
+        self.battle = battle
+        self.last_deploy = None  # (player_id, card_name, x, y)
+        self._original_deploy = battle.deploy_card
+
+        def intercepted_deploy(player_id, card_name, position):
+            result = self._original_deploy(player_id, card_name, position)
+            if result and player_id == 0:
+                self.last_deploy = (player_id, card_name, position.x, position.y)
+            return result
+
+        battle.deploy_card = intercepted_deploy
+
+    def reset(self):
+        self.last_deploy = None
+
+    def restore(self):
+        self.battle.deploy_card = self._original_deploy
+
+
+def _bot_to_action(bot: SmartBot, battle, interceptor: DeployInterceptor) -> np.ndarray:
+    """Let the bot act once, capture what it deployed via interceptor."""
+    interceptor.reset()
     player = battle.players[bot.pid]
     hand_before = list(player.hand)
-    elixir_before = player.elixir
 
-    # Let the bot act
     bot.act(battle)
 
-    hand_after = list(player.hand)
-    elixir_after = player.elixir
-
-    # Detect what was played by comparing hand/elixir
-    if hand_before == hand_after and abs(elixir_before - elixir_after) < 0.5:
-        # Bot chose WAIT
+    if interceptor.last_deploy is None:
         return np.array([0, 0, 0], dtype=np.int64)
 
-    # Find which card was played
-    for i, card in enumerate(hand_before):
-        if card not in hand_after or (hand_before.count(card) > hand_after.count(card)):
-            # Card i was played. But we need the position...
-            # We can't easily get the position the bot chose, so we'll
-            # detect it from new entities on the field
-            break
-
-    # Undo the bot's action — we need the env.step to execute it instead
-    # Restore state
-    player.hand = hand_before
-    player.elixir = elixir_before
-
-    # Re-execute to capture the deployment position
-    # Track new entities
-    entities_before = set(battle.entities.keys())
-    bot.act(battle)
-    entities_after = set(battle.entities.keys())
-    new_entities = entities_after - entities_before
-
-    if not new_entities:
-        return np.array([0, 0, 0], dtype=np.int64)
-
-    # Find the new entity's position
-    new_id = min(new_entities)
-    new_entity = battle.entities[new_id]
-    deploy_x = int(new_entity.position.x)
-    deploy_y = int(new_entity.position.y)
+    _, card_name, x, y = interceptor.last_deploy
 
     # Find which hand slot was played
-    hand_after2 = list(player.hand)
     card_slot = 0
     for i, card in enumerate(hand_before):
-        if i < len(hand_after2) and hand_before[i] != hand_after2[i]:
+        if card == card_name:
             card_slot = i
             break
 
-    # Clamp to valid ranges
-    card_choice = min(4, card_slot + 1)  # 1-indexed
-    tile_x = max(0, min(GRID_X - 1, deploy_x))
-    tile_y = max(0, min(GRID_Y - 1, deploy_y))
+    card_choice = min(4, card_slot + 1)
+    tile_x = max(0, min(GRID_X - 1, int(x)))
+    tile_y = max(0, min(GRID_Y - 1, int(y)))
 
     return np.array([card_choice, tile_x, tile_y], dtype=np.int64)
 
