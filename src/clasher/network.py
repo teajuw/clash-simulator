@@ -17,23 +17,20 @@ from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 class CRFeatureExtractor(BaseFeaturesExtractor):
     """CNN for spatial grid + FC for scalars → concatenated features."""
 
-    def __init__(self, observation_space: spaces.Dict, features_dim: int = 256):
-        # Must call super with the total features_dim
+    def __init__(self, observation_space: spaces.Dict, features_dim: int = 128):
         super().__init__(observation_space, features_dim)
 
         spatial_shape = observation_space["spatial"].shape  # (3, 32, 18)
-        scalar_shape = observation_space["scalars"].shape  # (15,)
+        scalar_shape = observation_space["scalars"].shape
 
-        # CNN for spatial features
+        # Lighter CNN: 16→32→32 filters (was 32→64→64)
         # Input: (batch, 3, 32, 18)
         self.cnn = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=3, stride=1, padding=1),  # (32, 32, 18)
+            nn.Conv2d(3, 16, kernel_size=3, stride=2, padding=1),  # (16, 16, 9)
             nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),  # (64, 16, 9)
+            nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),  # (32, 8, 5)
             nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, stride=2, padding=1),  # (64, 8, 5)
-            nn.ReLU(),
-            nn.Flatten(),  # 64 * 8 * 5 = 2560
+            nn.Flatten(),  # 32 * 8 * 5 = 1280
         )
 
         # Compute CNN output size
@@ -43,13 +40,13 @@ class CRFeatureExtractor(BaseFeaturesExtractor):
 
         # FC for scalar features
         self.scalar_fc = nn.Sequential(
-            nn.Linear(scalar_shape[0], 64),
+            nn.Linear(scalar_shape[0], 32),
             nn.ReLU(),
         )
 
         # Combined projection
         self.combined_fc = nn.Sequential(
-            nn.Linear(cnn_out_size + 64, features_dim),
+            nn.Linear(cnn_out_size + 32, features_dim),
             nn.ReLU(),
         )
 
