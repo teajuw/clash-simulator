@@ -385,9 +385,21 @@ class LeagueCallback(BaseCallback):
                     self._best_wr_ep = self.episode_count
 
             elif self.role == "entropy_explorer":
+                # Don't start explore/exploit schedule until main has a snapshot
+                main_zips = sorted(glob(os.path.join(self.snapshot_dir, "main_*.zip")))
+                if not main_zips:
+                    pass  # still warmup, keep exploring against fallback
+                else:
+                    if self._explorer_phase_start == 0:
+                        # First main snapshot just appeared — start the clock
+                        self._explorer_phase_start = self.episode_count
+                        self._explorer_phase = "explore"
+                        self.model.ent_coef = 0.10
+                        print(f"{self.log_prefix} Main snapshot found, starting explore phase")
+
                 # Entropy schedule: explore (0.10) for 200 eps, exploit (0.02) after
-                eps_in_phase = self.episode_count - self._explorer_phase_start
-                if self._explorer_phase == "explore" and eps_in_phase >= 200:
+                eps_in_phase = self.episode_count - self._explorer_phase_start if self._explorer_phase_start > 0 else 0
+                if self._explorer_phase == "explore" and self._explorer_phase_start > 0 and eps_in_phase >= 200:
                     self._explorer_phase = "exploit"
                     self._explorer_phase_start = self.episode_count
                     self.model.ent_coef = 0.02
